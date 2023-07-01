@@ -33,6 +33,7 @@ import javax.json.JsonValue;
 import java.io.StringReader;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
@@ -95,7 +96,20 @@ public class FlespiProtocolDecoder extends BaseHttpProtocolDecoder {
     private boolean decodeParam(String name, int index, JsonValue value, Position position) {
         switch (name) {
             case "timestamp":
-                position.setTime(new Date(((JsonNumber) value).longValue() * 1000));
+                // handle both unix and utc timestamps eg 2023-06-25T13:55:20.553Z
+                try {
+                    position.setTime(new Date(((JsonNumber) value).longValue() * 1000));
+                } catch (Exception e) {
+                    SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'hh:mm:ss.SSS'Z'");
+                    try {
+                        Date parsedDate = dateFormat.parse(((JsonString) value).getString());
+                        position.setTime(parsedDate);
+                    } catch (Exception e2) {
+                        // handle the exception, e.g. print an error message, return null, etc.
+                        e.printStackTrace();
+                        return false;
+                    }
+                }
                 return true;
             case "position.latitude":
                 position.setLatitude(((JsonNumber) value).doubleValue());
