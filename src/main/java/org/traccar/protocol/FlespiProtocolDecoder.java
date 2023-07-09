@@ -34,6 +34,7 @@ import java.io.StringReader;
 import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.TimeZone;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
@@ -101,6 +102,7 @@ public class FlespiProtocolDecoder extends BaseHttpProtocolDecoder {
                     position.setTime(new Date(((JsonNumber) value).longValue() * 1000));
                 } catch (Exception e) {
                     SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'hh:mm:ss.SSS'Z'");
+                    dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
                     try {
                         Date parsedDate = dateFormat.parse(((JsonString) value).getString());
                         position.setTime(parsedDate);
