@@ -806,7 +806,11 @@ public class Gt06ProtocolDecoder extends BaseProtocolDecoder {
             }
 
             if (hasLbs(type) && buf.readableBytes() > 6) {
-                decodeLbs(position, buf, type, hasStatus(type) && type != MSG_LBS_ALARM && type != MSG_LBS_STATUS);
+                boolean hasLength = hasStatus(type)
+                        && type != MSG_LBS_STATUS
+                        && type != MSG_LBS_ALARM
+                        && (type != MSG_GPS_LBS_STATUS_1 || variant != Variant.VXT01);
+                decodeLbs(position, buf, type, hasLength);
             }
 
             if (hasStatus(type)) {
@@ -826,6 +830,11 @@ public class Gt06ProtocolDecoder extends BaseProtocolDecoder {
                     position.set(Position.KEY_RSSI, buf.readUnsignedByte());
                     position.set(Position.KEY_ALARM, decodeAlarm(buf.readUnsignedByte()));
                 }
+            }
+
+            if (type == MSG_STATUS && variant == Variant.VXT01) {
+                position.set(Position.KEY_POWER, buf.readUnsignedShort() * 0.01);
+                position.set(Position.KEY_RSSI, buf.readUnsignedByte());
             }
 
             if (type == MSG_GPS_LBS_1) {
@@ -1407,6 +1416,8 @@ public class Gt06ProtocolDecoder extends BaseProtocolDecoder {
         if (header == 0x7878 && type == MSG_GPS_LBS_1 && length == 0x24) {
             variant = Variant.VXT01;
         } else if (header == 0x7878 && type == MSG_GPS_LBS_STATUS_1 && length == 0x24) {
+            variant = Variant.VXT01;
+        } else if (header == 0x7878 && type == MSG_STATUS && length == 0x0a) {
             variant = Variant.VXT01;
         } else if (header == 0x7878 && type == MSG_LBS_MULTIPLE_3 && length == 0x31) {
             variant = Variant.WANWAY_S20;
