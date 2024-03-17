@@ -24,20 +24,21 @@ import org.traccar.helper.DataConverter;
 import org.traccar.model.User;
 import org.traccar.storage.StorageException;
 
-import javax.annotation.security.PermitAll;
-import javax.inject.Inject;
-import javax.servlet.http.HttpServletRequest;
-import javax.ws.rs.WebApplicationException;
-import javax.ws.rs.container.ContainerRequestContext;
-import javax.ws.rs.container.ContainerRequestFilter;
-import javax.ws.rs.container.ResourceInfo;
-import javax.ws.rs.core.Context;
-import javax.ws.rs.core.Response;
-import javax.ws.rs.core.SecurityContext;
+import jakarta.annotation.security.PermitAll;
+import jakarta.inject.Inject;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.container.ContainerRequestContext;
+import jakarta.ws.rs.container.ContainerRequestFilter;
+import jakarta.ws.rs.container.ResourceInfo;
+import jakarta.ws.rs.core.Context;
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.SecurityContext;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.util.Date;
 
 public class SecurityRequestFilter implements ContainerRequestFilter {
 
@@ -82,16 +83,18 @@ public class SecurityRequestFilter implements ContainerRequestFilter {
             if (authHeader != null) {
 
                 try {
-                    User user;
+                    LoginResult loginResult;
                     if (authHeader.startsWith("Bearer ")) {
-                        user = loginService.login(authHeader.substring(7));
+                        loginResult = loginService.login(authHeader.substring(7));
                     } else {
                         String[] auth = decodeBasicAuth(authHeader);
-                        user = loginService.login(auth[0], auth[1]);
+                        loginResult = loginService.login(auth[0], auth[1], null);
                     }
-                    if (user != null) {
+                    if (loginResult != null) {
+                        User user = loginResult.getUser();
                         statisticsManager.registerRequest(user.getId());
-                        securityContext = new UserSecurityContext(new UserPrincipal(user.getId()));
+                        securityContext = new UserSecurityContext(
+                                new UserPrincipal(user.getId(), loginResult.getExpiration()));
                     }
                 } catch (StorageException | GeneralSecurityException | IOException e) {
                     throw new WebApplicationException(e);
@@ -100,10 +103,14 @@ public class SecurityRequestFilter implements ContainerRequestFilter {
             } else if (request.getSession() != null) {
 
                 Long userId = (Long) request.getSession().getAttribute(SessionResource.USER_ID_KEY);
+                Date expiration = (Date) request.getSession().getAttribute(SessionResource.EXPIRATION_KEY);
                 if (userId != null) {
-                    injector.getInstance(PermissionsService.class).getUser(userId).checkDisabled();
-                    statisticsManager.registerRequest(userId);
-                    securityContext = new UserSecurityContext(new UserPrincipal(userId));
+                    User user = injector.getInstance(PermissionsService.class).getUser(userId);
+                    if (user != null) {
+                        user.checkDisabled();
+                        statisticsManager.registerRequest(userId);
+                        securityContext = new UserSecurityContext(new UserPrincipal(userId, expiration));
+                    }
                 }
 
             }

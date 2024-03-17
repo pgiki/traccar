@@ -271,18 +271,26 @@ public class SuntechProtocolDecoder extends BaseProtocolDecoder {
             index += 1; // collaborative network
         }
 
-        DateFormat dateFormat = new SimpleDateFormat("yyyyMMddHH:mm:ss");
-        dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
-        position.setTime(dateFormat.parse(values[index++] + values[index++]));
+        if (values[index].isEmpty()) {
 
-        position.setLatitude(Double.parseDouble(values[index++]));
-        position.setLongitude(Double.parseDouble(values[index++]));
-        position.setSpeed(UnitsConverter.knotsFromKph(Double.parseDouble(values[index++])));
-        position.setCourse(Double.parseDouble(values[index++]));
+            getLastLocation(position, null);
 
-        position.set(Position.KEY_SATELLITES, Integer.parseInt(values[index++]));
+        } else {
 
-        position.setValid(values[index++].equals("1"));
+            DateFormat dateFormat = new SimpleDateFormat("yyyyMMddHH:mm:ss");
+            dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
+            position.setTime(dateFormat.parse(values[index++] + values[index++]));
+
+            position.setLatitude(Double.parseDouble(values[index++]));
+            position.setLongitude(Double.parseDouble(values[index++]));
+            position.setSpeed(UnitsConverter.knotsFromKph(Double.parseDouble(values[index++])));
+            position.setCourse(Double.parseDouble(values[index++]));
+
+            position.set(Position.KEY_SATELLITES, Integer.parseInt(values[index++]));
+
+            position.setValid(values[index++].equals("1"));
+
+        }
 
         return position;
     }
@@ -446,9 +454,10 @@ public class SuntechProtocolDecoder extends BaseProtocolDecoder {
 
             if (values.length - index >= 2) {
                 String driverUniqueId = values[index++];
-                if (values[index++].equals("1") && !driverUniqueId.isEmpty()) {
+                if (!driverUniqueId.isEmpty()) {
                     position.set(Position.KEY_DRIVER_UNIQUE_ID, driverUniqueId);
                 }
+                index += 1; // registered
             }
 
             if (isIncludeTemp(deviceSession.getDeviceId())) {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2015 - 2019 Anton Tananaev (anton@traccar.org)
+ * Copyright 2015 - 2024 Anton Tananaev (anton@traccar.org)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import org.traccar.TrackerServer;
 import org.traccar.config.Config;
 import org.traccar.model.Command;
 
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 public class HuabaoProtocol extends BaseProtocol {
 
@@ -33,6 +33,7 @@ public class HuabaoProtocol extends BaseProtocol {
         addServer(new TrackerServer(config, getName(), false) {
             @Override
             protected void addProtocolHandlers(PipelineBuilder pipeline, Config config) {
+                pipeline.addLast(new HuabaoFrameEncoder());
                 pipeline.addLast(new HuabaoFrameDecoder());
                 pipeline.addLast(new HuabaoProtocolEncoder(HuabaoProtocol.this));
                 pipeline.addLast(new HuabaoProtocolDecoder(HuabaoProtocol.this));

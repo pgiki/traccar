@@ -15,8 +15,14 @@
  */
 package org.traccar.api.resource;
 
+import com.warrenstrange.googleauth.GoogleAuthenticator;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.ws.rs.DELETE;
+import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.core.Context;
 import org.traccar.api.BaseObjectResource;
 import org.traccar.config.Config;
+import org.traccar.config.Keys;
 import org.traccar.helper.LogAction;
 import org.traccar.helper.model.UserUtil;
 import org.traccar.model.ManagedUser;
@@ -27,16 +33,16 @@ import org.traccar.storage.query.Columns;
 import org.traccar.storage.query.Condition;
 import org.traccar.storage.query.Request;
 
-import javax.annotation.security.PermitAll;
-import javax.inject.Inject;
-import javax.ws.rs.Consumes;
-import javax.ws.rs.GET;
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import jakarta.annotation.security.PermitAll;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 import java.util.Collection;
 
 @Path("users")
@@ -46,6 +52,9 @@ public class UserResource extends BaseObjectResource<User> {
 
     @Inject
     private Config config;
+
+    @Context
+    private HttpServletRequest request;
 
     public UserResource() {
         super(User.class);
@@ -89,6 +98,10 @@ public class UserResource extends BaseObjectResource<User> {
                 if (!permissionsService.getServer().getRegistration()) {
                     throw new SecurityException("Registration disabled");
                 }
+                if (permissionsService.getServer().getBoolean(Keys.WEB_TOTP_FORCE.getKey())
+                        && entity.getTotpKey() == null) {
+                    throw new SecurityException("One-time password key is required");
+                }
                 UserUtil.setUserDefaults(entity, config);
             }
         }
@@ -109,6 +122,26 @@ public class UserResource extends BaseObjectResource<User> {
             LogAction.link(getUserId(), User.class, getUserId(), ManagedUser.class, entity.getId());
         }
         return Response.ok(entity).build();
+    }
+
+    @Path("{id}")
+    @DELETE
+    public Response remove(@PathParam("id") long id) throws Exception {
+        Response response = super.remove(id);
+        if (getUserId() == id) {
+            request.getSession().removeAttribute(SessionResource.USER_ID_KEY);
+        }
+        return response;
+    }
+
+    @Path("totp")
+    @PermitAll
+    @POST
+    public String generateTotpKey() throws StorageException {
+        if (!permissionsService.getServer().getBoolean(Keys.WEB_TOTP_ENABLE.getKey())) {
+            throw new SecurityException("One-time password is disabled");
+        }
+        return new GoogleAuthenticator().createCredentials().getKey();
     }
 
 }

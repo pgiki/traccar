@@ -53,7 +53,10 @@ public class Device extends GroupedModel implements Disableable, Schedulable {
     }
 
     public void setUniqueId(String uniqueId) {
-        this.uniqueId = uniqueId;
+        if (uniqueId.contains("../") || uniqueId.contains("..\\")) {
+            throw new IllegalArgumentException("Invalid unique id");
+        }
+        this.uniqueId = uniqueId.trim();
     }
 
     public static final String STATUS_UNKNOWN = "unknown";
@@ -100,7 +103,7 @@ public class Device extends GroupedModel implements Disableable, Schedulable {
     }
 
     public void setPhone(String phone) {
-        this.phone = phone;
+        this.phone = phone != null ? phone.trim() : null;
     }
 
     private String model;

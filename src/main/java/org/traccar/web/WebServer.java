@@ -21,7 +21,6 @@ import org.eclipse.jetty.http.HttpCookie;
 import org.eclipse.jetty.http.HttpMethod;
 import org.eclipse.jetty.http.HttpStatus;
 import org.eclipse.jetty.proxy.AsyncProxyServlet;
-import org.eclipse.jetty.server.CustomRequestLog;
 import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.RequestLogWriter;
 import org.eclipse.jetty.server.Server;
@@ -52,11 +51,11 @@ import org.traccar.config.Config;
 import org.traccar.config.Keys;
 import org.traccar.helper.ObjectMapperContextResolver;
 
-import javax.servlet.DispatcherType;
-import javax.servlet.ServletException;
-import javax.servlet.SessionCookieConfig;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.DispatcherType;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.SessionCookieConfig;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import javax.sql.DataSource;
 import java.io.File;
 import java.io.IOException;
@@ -115,8 +114,7 @@ public class WebServer implements LifecycleObject {
             RequestLogWriter logWriter = new RequestLogWriter(config.getString(Keys.WEB_REQUEST_LOG_PATH));
             logWriter.setAppend(true);
             logWriter.setRetainDays(config.getInteger(Keys.WEB_REQUEST_LOG_RETAIN_DAYS));
-            CustomRequestLog requestLog = new CustomRequestLog(logWriter, CustomRequestLog.NCSA_FORMAT);
-            server.setRequestLog(requestLog);
+            server.setRequestLog(new WebRequestLog(logWriter));
         }
     }
 
@@ -193,14 +191,16 @@ public class WebServer implements LifecycleObject {
             sessionHandler.setSessionCache(sessionCache);
         }
 
+        SessionCookieConfig sessionCookieConfig = servletHandler.getServletContext().getSessionCookieConfig();
+
         int sessionTimeout = config.getInteger(Keys.WEB_SESSION_TIMEOUT);
         if (sessionTimeout > 0) {
             servletHandler.getSessionHandler().setMaxInactiveInterval(sessionTimeout);
+            sessionCookieConfig.setMaxAge(sessionTimeout);
         }
 
         String sameSiteCookie = config.getString(Keys.WEB_SAME_SITE_COOKIE);
         if (sameSiteCookie != null) {
-            SessionCookieConfig sessionCookieConfig = servletHandler.getServletContext().getSessionCookieConfig();
             switch (sameSiteCookie.toLowerCase()) {
                 case "lax":
                     sessionCookieConfig.setComment(HttpCookie.SAME_SITE_LAX_COMMENT);
