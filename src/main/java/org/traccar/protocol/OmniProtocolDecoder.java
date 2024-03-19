@@ -56,7 +56,7 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
         String deviceData = joinWithComma(requiredData);
         DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyMMddHHmmss");
         LocalDateTime now = LocalDateTime.now();
-        String reply = '\uFFFF'+String.format("*CMDS,%s,%s,%s#<LF>", deviceData, dtf.format(now), command);
+        String reply = String.format("ÿÿ*CMDS,%s,%s,%s#<LF>\n", deviceData, dtf.format(now), command);
         return new StringBuffer(reply);
     }
 
@@ -64,7 +64,7 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
     protected Object decode(Channel channel, SocketAddress remoteAddress, Object msg) throws Exception {
         /*
          * sample of valid sentences
-         * CMDR,OM,123456789123456,000000000000,L1,1234,1675415421,1#
+         * ÿ*CMDR,OM,123456789123456,000000000000,L1,1234,1675415421,1#
          * CMDR,OM,123456789123456,200318123020,Q0,412,80#<LF>
          * CMDR,OM,123456789123456,200318123020,H0,0,412,28,80,0#<LF>
          */
