@@ -86,22 +86,25 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
         Position position = new Position(getProtocolName());
         position.setDeviceId(deviceSession.getDeviceId());
         getLastLocation(position, null);
-        String payload = sentence.substring(38, sentence.length() - 1);
 
         switch (type) {
-            case "L0": //Unlock Command
-                position.set(Position.KEY_LOCK, Integer.parseInt(values[cursor++]) == 0);
-                position.set(Position.KEY_DRIVER_UNIQUE_ID,values[cursor++]);
+            case "L0": // Unlock Command //Unlock result return 0->success[unlocked] 1->fail[still
+                       // locked]
+                boolean isLocked = Integer.parseInt(values[cursor++]) == 1;
+                position.set(Position.KEY_LOCK, isLocked);
+                position.set(Position.KEY_DRIVER_UNIQUE_ID, values[cursor++]);
+                position.set(Position.KEY_ALARM, isLocked ? "locked" : "unlocked");
                 channel.write(new NetworkMessage(formatCommand(values, "Re,L0"), remoteAddress));
                 break;
-            case "L1": //Locked Command，Lock automatic upload
+            case "L1": // Locked Command，Lock automatic upload
                 position.set(Position.KEY_DRIVER_UNIQUE_ID, values[cursor++]);
                 cursor++; // skip the timestamp
                 position.set(Position.KEY_DRIVING_TIME, values[cursor++]);
-                position.set(Position.KEY_LOCK, true);
+                position.set(Position.KEY_LOCK, false);
+                position.set(Position.KEY_ALARM, "unlocked");
                 channel.write(new NetworkMessage(formatCommand(values, "Re,L1"), remoteAddress));
                 break;
-            case "L3": //electric vehicle switch control
+            case "L3": // electric vehicle switch control
                 position.set(Position.KEY_IGNITION, Integer.parseInt(values[cursor++]) > 1);
                 break;
             case "L5": // TODO: external lock device control
@@ -163,7 +166,7 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 position.set(Position.KEY_BATTERY_LEVEL, Integer.parseInt(values[cursor++]));
                 break;
             case "H0":
-                position.set(Position.KEY_LOCK, Integer.parseInt(values[cursor++]) > 0);
+                position.set(Position.KEY_LOCK, Integer.parseInt(values[cursor++]) == 1);
                 position.set(Position.KEY_BATTERY, Integer.parseInt(values[cursor++]) * 0.01);
                 position.set(Position.KEY_RSSI, Integer.parseInt(values[cursor++]));
                 position.set(Position.KEY_STATUS, Integer.parseInt(values[cursor++]));
@@ -173,14 +176,23 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 position.set(Position.KEY_BATTERY, Integer.parseInt(values[cursor++]) * 0.01);
                 position.set(Position.KEY_RSSI, Integer.parseInt(values[cursor++]));
                 position.set(Position.KEY_SATELLITES, Integer.parseInt(values[cursor++]));
-                position.set(Position.KEY_LOCK, Integer.parseInt(values[cursor++]) > 0);
+                boolean isLocked2 = Integer.parseInt(values[cursor++]) == 1;
+                position.set(Position.KEY_LOCK, isLocked2);
+                position.set(Position.KEY_ALARM, isLocked2 ? "locked" : "unlocked");
                 // for fault messages
                 switch (Integer.parseInt(values[cursor++])) {
-                    case 3:
-                        position.set(Position.KEY_ALARM, Position.ALARM_JAMMING);
+                    case 1:
+                        position.set(Position.KEY_ALARM, Position.ALARM_FATIGUE_DRIVING);
                         break;
-                    case 4:
+                    case 2:
                         position.set(Position.KEY_ALARM, Position.ALARM_FALL_DOWN);
+                        break;
+                    case 3:
+                        position.set(Position.KEY_ALARM, Position.ALARM_TAMPERING);
+                        break;
+                    case 6:
+                    case 7:
+                        position.set(Position.KEY_ALARM, Position.ALARM_MOVEMENT);
                         break;
                     default:
                         break;
@@ -189,8 +201,8 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 break;
             case "W0": // (Alarm instruction) eg *CMDR,OM,123456789123456,200318123020,W0,1#<LF>
                 /*
-                 * 1: Illegal movement alarm 
-                 * 2: Falling down alarm 
+                 * 1: Illegal movement alarm
+                 * 2: Falling down alarm
                  * 3: Illegal dismantling alarm
                  * 6: Clear the alarm for falling down (the electric car is lifted up)
                  * 7. Clear the alarm for illegal dismantling (connection recovery)
@@ -223,7 +235,7 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
             case "K0":
             case "I0":
             case "M0":
-                position.set(Position.KEY_RESULT, payload);
+                position.set(Position.KEY_RESULT, sentence);
                 break;
             default:
                 break;
