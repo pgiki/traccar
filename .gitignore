@@ -15,4 +15,4 @@ bin
 conf/
 data/
 logs/
-Makefile
+Makefile*

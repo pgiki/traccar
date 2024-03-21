@@ -90,18 +90,18 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
         switch (type) {
             case "L0": // Unlock Command //Unlock result return 0->success[unlocked] 1->fail[still
                        // locked]
-                boolean isLocked = Integer.parseInt(values[cursor++]) == 1;
-                position.set(Position.KEY_LOCK, isLocked);
+                boolean isSuccess = Integer.parseInt(values[cursor++]) == 0;
+                position.set(Position.KEY_LOCK, !isSuccess);
                 position.set(Position.KEY_DRIVER_UNIQUE_ID, values[cursor++]);
-                position.set(Position.KEY_ALARM, isLocked ? "locked" : "unlocked");
+                position.set(Position.KEY_ALARM, isSuccess ? "unlockSuccess" : "unlockFailed");
                 channel.write(new NetworkMessage(formatCommand(values, "Re,L0"), remoteAddress));
                 break;
-            case "L1": // Locked Command，Lock automatic upload
+            case "L1": // Locked Command，send when the lock is locked
                 position.set(Position.KEY_DRIVER_UNIQUE_ID, values[cursor++]);
                 cursor++; // skip the timestamp
                 position.set(Position.KEY_DRIVING_TIME, values[cursor++]);
-                position.set(Position.KEY_LOCK, false);
-                position.set(Position.KEY_ALARM, "unlocked");
+                position.set(Position.KEY_LOCK, true);
+                position.set(Position.KEY_ALARM, "locked");
                 channel.write(new NetworkMessage(formatCommand(values, "Re,L1"), remoteAddress));
                 break;
             case "L3": // electric vehicle switch control
@@ -116,6 +116,9 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 // CMDR,OM,862205059172132,000000000000,D0,1,151644.000,A,0640.2063,S,03912.6205,E,10,0.83,,3.0,M,A#
                 cursor = 6;
                 String timeString = values[cursor++]; //
+                if (timeString.isEmpty()){
+                    break;
+                }
                 // extra and set time
                 int hour = Integer.parseInt(timeString.substring(0, 2));
                 int minute = Integer.parseInt(timeString.substring(2, 4));
@@ -176,9 +179,9 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 position.set(Position.KEY_BATTERY, Integer.parseInt(values[cursor++]) * 0.01);
                 position.set(Position.KEY_RSSI, Integer.parseInt(values[cursor++]));
                 position.set(Position.KEY_SATELLITES, Integer.parseInt(values[cursor++]));
-                boolean isLocked2 = Integer.parseInt(values[cursor++]) == 1;
-                position.set(Position.KEY_LOCK, isLocked2);
-                position.set(Position.KEY_ALARM, isLocked2 ? "locked" : "unlocked");
+                boolean isLocked = Integer.parseInt(values[cursor++]) == 1;
+                position.set(Position.KEY_LOCK, isLocked);
+                position.set(Position.KEY_ALARM, isLocked ? "locked" : "unlocked");
                 // for fault messages
                 switch (Integer.parseInt(values[cursor++])) {
                     case 1:
