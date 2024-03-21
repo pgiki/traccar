@@ -179,7 +179,9 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 position.set(Position.KEY_BATTERY, Integer.parseInt(values[cursor++]) * 0.01);
                 position.set(Position.KEY_RSSI, Integer.parseInt(values[cursor++]));
                 position.set(Position.KEY_SATELLITES, Integer.parseInt(values[cursor++]));
+                
                 boolean isLocked = Integer.parseInt(values[cursor++]) == 1;
+                
                 position.set(Position.KEY_LOCK, isLocked);
                 position.set(Position.KEY_ALARM, isLocked ? "locked" : "unlocked");
                 // for fault messages
