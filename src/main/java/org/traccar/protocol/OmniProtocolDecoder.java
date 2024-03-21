@@ -93,7 +93,7 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 boolean isSuccess = Integer.parseInt(values[cursor++]) == 0;
                 position.set(Position.KEY_LOCK, !isSuccess);
                 position.set(Position.KEY_DRIVER_UNIQUE_ID, values[cursor++]);
-                position.set(Position.KEY_ALARM, isSuccess ? "unlockSuccess" : "unlockFailed");
+                position.set(Position.KEY_ALARM, isSuccess ? Position.ALARM_UNLOCK : Position.ALARM_LOCK);
                 channel.write(new NetworkMessage(formatCommand(values, "Re,L0"), remoteAddress));
                 break;
             case "L1": // Locked Command，send when the lock is locked
@@ -101,7 +101,7 @@ public class OmniProtocolDecoder extends BaseProtocolDecoder {
                 cursor++; // skip the timestamp
                 position.set(Position.KEY_DRIVING_TIME, values[cursor++]);
                 position.set(Position.KEY_LOCK, true);
-                position.set(Position.KEY_ALARM, "locked");
+                position.set(Position.KEY_ALARM, Position.ALARM_LOCK);
                 channel.write(new NetworkMessage(formatCommand(values, "Re,L1"), remoteAddress));
                 break;
             case "L3": // electric vehicle switch control
