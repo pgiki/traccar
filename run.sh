@@ -30,6 +30,12 @@ done
 # ── Prerequisite checks ───────────────────────────────────────────────────────
 echo "==> Checking prerequisites..."
 command -v java >/dev/null  || { echo "ERROR: 'java' not found — please install a JDK (17+)"; exit 1; }
+command -v javac >/dev/null || {
+  echo "ERROR: 'javac' not found — you have a JRE but Gradle needs a full JDK (compiler)."
+  echo "       On Ubuntu: sudo apt install openjdk-17-jdk-headless"
+  echo "       Then:       sudo update-alternatives --config java   (pick the same JDK)"
+  exit 1
+}
 command -v node >/dev/null  || { echo "ERROR: 'node' not found — please install Node.js (18+)"; exit 1; }
 command -v npm  >/dev/null  || { echo "ERROR: 'npm'  not found — please install Node.js (18+)"; exit 1; }
 [[ -f "gradlew" ]]          || { echo "ERROR: 'gradlew' not found — run this script from the traccar project root"; exit 1; }
