@@ -51,14 +51,19 @@ public class AsyncSocket implements Session.Listener.AutoDemanding, ConnectionMa
     private final Storage storage;
     private final long userId;
 
+    private volatile SocketFilterConfig filters;
+
     private boolean includeLogs;
     private Session session;
 
-    public AsyncSocket(ObjectMapper objectMapper, ConnectionManager connectionManager, Storage storage, long userId) {
+    public AsyncSocket(
+            ObjectMapper objectMapper, ConnectionManager connectionManager, Storage storage, long userId,
+            SocketFilterConfig filters) {
         this.objectMapper = objectMapper;
         this.connectionManager = connectionManager;
         this.storage = storage;
         this.userId = userId;
+        this.filters = filters != null ? filters : SocketFilterConfig.empty();
     }
 
     @Override
@@ -66,7 +71,7 @@ public class AsyncSocket implements Session.Listener.AutoDemanding, ConnectionMa
         this.session = session;
         try {
             Map<String, Collection<?>> data = new HashMap<>();
-            data.put(KEY_POSITIONS, PositionUtil.getLatestPositions(storage, userId));
+            data.put(KEY_POSITIONS, filters.filterPositions(PositionUtil.getLatestPositions(storage, userId)));
             sendData(data);
             connectionManager.addListener(userId, this);
         } catch (StorageException e) {
@@ -88,8 +93,13 @@ public class AsyncSocket implements Session.Listener.AutoDemanding, ConnectionMa
             if (json.hasNonNull("logs")) {
                 includeLogs = json.get("logs").asBoolean();
             }
+            if (json.has("positions") || json.has("events")) {
+                filters = filters.mergeWithJson(json, storage, userId);
+            }
         } catch (JsonProcessingException e) {
             LOGGER.warn("Socket JSON parsing error", e);
+        } catch (StorageException e) {
+            LOGGER.warn("Socket filter update error", e);
         }
     }
 
@@ -107,16 +117,28 @@ public class AsyncSocket implements Session.Listener.AutoDemanding, ConnectionMa
 
     @Override
     public void onUpdateDevice(Device device) {
+        SocketFilterConfig f = filters;
+        if (!f.acceptsDevice(device)) {
+            return;
+        }
         sendData(Map.of(KEY_DEVICES, List.of(device)));
     }
 
     @Override
     public void onUpdatePosition(Position position) {
+        SocketFilterConfig f = filters;
+        if (!f.acceptsPosition(position)) {
+            return;
+        }
         sendData(Map.of(KEY_POSITIONS, List.of(position)));
     }
 
     @Override
     public void onUpdateEvent(Event event) {
+        SocketFilterConfig f = filters;
+        if (!f.acceptsEvent(event)) {
+            return;
+        }
         sendData(Map.of(KEY_EVENTS, List.of(event)));
     }
 

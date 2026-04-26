@@ -72,7 +72,13 @@ public class AsyncSocketServlet extends JettyWebSocketServlet {
                 userId = (Long) ((HttpSession) req.getSession()).getAttribute(SessionHelper.USER_ID_KEY);
             }
             if (userId != null) {
-                return new AsyncSocket(objectMapper, connectionManager, storage, userId);
+                SocketFilterConfig socketFilters;
+                try {
+                    socketFilters = SocketFilterConfig.fromRequestParameterList(req.getParameterMap(), storage, userId);
+                } catch (StorageException e) {
+                    throw new RuntimeException(e);
+                }
+                return new AsyncSocket(objectMapper, connectionManager, storage, userId, socketFilters);
             }
             return null;
         });
