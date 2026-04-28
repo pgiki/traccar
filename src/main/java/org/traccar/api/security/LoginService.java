@@ -33,8 +33,10 @@ import jakarta.annotation.Nullable;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.util.Locale;
 import java.util.Objects;
 
 @Singleton
@@ -44,6 +46,7 @@ public class LoginService {
     private final Storage storage;
     private final TokenManager tokenManager;
     private final LdapProvider ldapProvider;
+    private final ExternalTokenAuthenticator externalTokenAuthenticator;
 
     private final String serviceAccountToken;
     private final boolean forceLdap;
@@ -51,11 +54,16 @@ public class LoginService {
 
     @Inject
     public LoginService(
-            Config config, Storage storage, TokenManager tokenManager, @Nullable LdapProvider ldapProvider) {
+            Config config,
+            Storage storage,
+            TokenManager tokenManager,
+            @Nullable LdapProvider ldapProvider,
+            @Nullable ExternalTokenAuthenticator externalTokenAuthenticator) {
         this.storage = storage;
         this.config = config;
         this.tokenManager = tokenManager;
         this.ldapProvider = ldapProvider;
+        this.externalTokenAuthenticator = externalTokenAuthenticator;
         serviceAccountToken = config.getString(Keys.WEB_SERVICE_ACCOUNT_TOKEN);
         forceLdap = config.getBoolean(Keys.LDAP_FORCE);
         forceOpenId = config.getBoolean(Keys.OPENID_FORCE);
@@ -79,13 +87,103 @@ public class LoginService {
         if (serviceAccountToken != null && serviceAccountToken.equals(token)) {
             return new LoginResult(new ServiceAccountUser());
         }
-        TokenManager.TokenData tokenData = tokenManager.verifyToken(token);
-        User user = storage.getObject(User.class, new Request(
-                new Columns.All(), new Condition.Equals("id", tokenData.getUserId())));
-        if (user != null) {
-            checkUserEnabled(user);
+        try {
+            TokenManager.TokenData tokenData = tokenManager.verifyToken(token);
+            User user = storage.getObject(User.class, new Request(
+                    new Columns.All(), new Condition.Equals("id", tokenData.getUserId())));
+            if (user != null) {
+                checkUserEnabled(user);
+            }
+            return new LoginResult(user, tokenData.getExpiration());
+        } catch (IOException | GeneralSecurityException | RuntimeException e) {
+            return loginExternalToken(token);
         }
-        return new LoginResult(user, tokenData.getExpiration());
+    }
+
+    private LoginResult loginExternalToken(String token) throws StorageException {
+        if (externalTokenAuthenticator == null) {
+            return null;
+        }
+        ExternalTokenAuthenticator.IntrospectionResult introspectionResult;
+        try {
+            introspectionResult = externalTokenAuthenticator.introspect(token);
+        } catch (IOException e) {
+            return null;
+        }
+        if (introspectionResult == null || !introspectionResult.active()) {
+            return null;
+        }
+        String principal = introspectionResult.username();
+        if (principal == null || principal.isBlank()) {
+            principal = introspectionResult.email();
+        }
+        if (principal == null || principal.isBlank()) {
+            principal = introspectionResult.sub();
+        }
+        if (principal == null || principal.isBlank()) {
+            return null;
+        }
+        User user = storage.getObject(User.class, new Request(
+                new Columns.All(),
+                new Condition.Or(
+                        new Condition.Equals("LOWER(email)", principal.toLowerCase()),
+                        new Condition.Equals("LOWER(login)", principal.toLowerCase()))));
+        if (user == null && introspectionResult.email() != null && !introspectionResult.email().isBlank()) {
+            user = storage.getObject(User.class, new Request(
+                    new Columns.All(), new Condition.Equals("LOWER(email)", introspectionResult.email().toLowerCase())));
+        }
+        if (user == null) {
+            user = provisionExternalUser(
+                    principal, introspectionResult.username(), introspectionResult.email(), introspectionResult.sub());
+        }
+        if (user == null) {
+            return null;
+        }
+        checkUserEnabled(user);
+        return new LoginResult(user, introspectionResult.expiration());
+    }
+
+    private User provisionExternalUser(
+            String principal, String username, String email, String subject) throws StorageException {
+        String resolvedEmail = email;
+        if (resolvedEmail == null || resolvedEmail.isBlank()) {
+            String localPart = username;
+            if (localPart == null || localPart.isBlank()) {
+                localPart = subject;
+            }
+            resolvedEmail = buildSyntheticEmail(localPart);
+        }
+        if (resolvedEmail == null || resolvedEmail.isBlank()) {
+            return null;
+        }
+
+        User user = new User();
+        UserUtil.setUserDefaults(user, config);
+        user.setName(username != null && !username.isBlank() ? username : principal);
+        user.setLogin(principal);
+        user.setEmail(resolvedEmail);
+        user.setFixedEmail(true);
+        user.setId(storage.addObject(user, new Request(new Columns.Exclude("id"))));
+        return user;
+    }
+
+    private String buildSyntheticEmail(String localPart) {
+        if (localPart == null || localPart.isBlank()) {
+            return null;
+        }
+        String issuer = config.getString(Keys.OPENID_ISSUER_URL);
+        if (issuer == null || issuer.isBlank()) {
+            return null;
+        }
+        String host = URI.create(issuer).getHost();
+        if (host == null || host.isBlank()) {
+            return null;
+        }
+        String normalizedLocalPart = localPart.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]", "_");
+        if (normalizedLocalPart.isBlank()) {
+            normalizedLocalPart = "user";
+        }
+        return normalizedLocalPart + "@" + host.toLowerCase(Locale.ROOT);
     }
 
     public LoginResult login(String email, String password, Integer code) throws StorageException {

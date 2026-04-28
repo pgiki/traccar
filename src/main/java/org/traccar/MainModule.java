@@ -99,6 +99,7 @@ import org.traccar.storage.MemoryStorage;
 import org.traccar.storage.Storage;
 import org.traccar.web.WebServer;
 import org.traccar.api.security.LoginService;
+import org.traccar.api.security.ExternalTokenAuthenticator;
 
 import jakarta.annotation.Nullable;
 import jakarta.inject.Singleton;
@@ -193,6 +194,16 @@ public class MainModule extends AbstractModule {
             throws IOException, URISyntaxException, GeneralException {
         if (config.hasKey(Keys.OPENID_CLIENT_ID)) {
             return new OpenIdProvider(config, loginService, actionLogger);
+        }
+        return null;
+    }
+
+    @Singleton
+    @Provides
+    public static ExternalTokenAuthenticator provideExternalTokenAuthenticator(
+            Config config, Client client, ObjectMapper objectMapper) {
+        if (config.hasKey(Keys.OPENID_ISSUER_URL)) {
+            return new ExternalTokenAuthenticator(config, client, objectMapper);
         }
         return null;
     }
