@@ -31,9 +31,9 @@ For bearer token authentication:
 1. Traccar first attempts local token verification.
 2. If local verification fails, Traccar performs external token introspection.
 3. If token is active, Traccar maps identity in order:
-   - `username`
-   - `email`
-   - `sub`
+  - `username`
+  - `email`
+  - `sub`
 
 If no principal can be resolved or token is inactive, authentication is rejected.
 
@@ -50,12 +50,12 @@ Auto-provisioned user fields:
 - `name`: `username` if available, otherwise resolved principal
 - `email`:
   - introspection `email` claim, if available
-  - otherwise synthetic email fallback: `<username-or-sub>@<issuer-domain>`
+  - otherwise synthetic email fallback: `<username-or-sub>@localhost`
 - `fixedEmail`: `true`
 
 Example synthetic email:
 
-- `newuser@issuer.example.com`
+- `newuser@localhost`
 
 ## WebSocket Support
 
