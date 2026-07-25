@@ -38,7 +38,7 @@ These are required by the Omni protocol. Removing them causes device retries.
 
 ### Server-authorized unlock/lock
 
-Traccar relays authenticated `L0`/`L1` **only** after a server-issued `R0` (`engineResume`, `engineStop`, or custom `R0,...`). Unsolicited `R0` from the device is **not** relayed; Traccar sets `unauthorizedRequest=true` and emits `alarm=tampering`.
+Traccar relays authenticated `L0`/`L1` **only** after a server-issued `R0` (`engineResume`, `engineStop`, or custom `R0,...`). Unsolicited `R0` from the device is **not** relayed; Traccar sets `unauthorizedRequest=true` and emits `alarm=tampering`. Pending-command and server-lock-cycle state are tracked **per device**, so interleaved traffic from other bikes cannot clear another device's authorized cycle.
 
 When `C0` arrives, Traccar:
 

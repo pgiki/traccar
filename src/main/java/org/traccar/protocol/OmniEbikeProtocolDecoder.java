@@ -25,6 +25,7 @@ import org.traccar.session.DeviceSession;
 import org.traccar.model.Position;
 
 import java.net.SocketAddress;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
@@ -34,24 +35,52 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
     private static final String RESPONSE_BEACON = "*CMDS";
     private static final long PENDING_COMMAND_TIMEOUT_MS = 30_000L;
 
-    private String pendingCommand;
-    private long pendingCommandExpiry;
-    private boolean serverLockCycle;
+    private static final class DeviceAuthState {
+        private String pendingCommand;
+        private long pendingCommandExpiry;
+        private boolean serverLockCycle;
+    }
+
+    private final ConcurrentHashMap<Long, DeviceAuthState> authByDevice = new ConcurrentHashMap<>();
 
     public OmniEbikeProtocolDecoder(Protocol protocol) {
         super(protocol);
     }
 
-    public void setPendingCommand(String type) {
-        this.pendingCommand = type;
-        this.pendingCommandExpiry = System.currentTimeMillis() + PENDING_COMMAND_TIMEOUT_MS;
+    public void setPendingCommand(long deviceId, String type) {
+        DeviceAuthState state = authState(deviceId);
+        state.pendingCommand = type;
+        state.pendingCommandExpiry = System.currentTimeMillis() + PENDING_COMMAND_TIMEOUT_MS;
     }
 
-    private boolean consumeAuthorizedPendingCommand() {
-        boolean authorized = pendingCommand != null && System.currentTimeMillis() < pendingCommandExpiry;
-        pendingCommand = null;
-        pendingCommandExpiry = 0L;
+    private DeviceAuthState authState(long deviceId) {
+        return authByDevice.computeIfAbsent(deviceId, id -> new DeviceAuthState());
+    }
+
+    private boolean consumeAuthorizedPendingCommand(long deviceId) {
+        DeviceAuthState state = authByDevice.get(deviceId);
+        if (state == null) {
+            return false;
+        }
+        boolean authorized = state.pendingCommand != null
+                && System.currentTimeMillis() < state.pendingCommandExpiry;
+        state.pendingCommand = null;
+        state.pendingCommandExpiry = 0L;
         return authorized;
+    }
+
+    private void setServerLockCycle(long deviceId, boolean value) {
+        authState(deviceId).serverLockCycle = value;
+    }
+
+    private boolean consumeServerLockCycle(long deviceId) {
+        DeviceAuthState state = authByDevice.get(deviceId);
+        if (state == null) {
+            return false;
+        }
+        boolean value = state.serverLockCycle;
+        state.serverLockCycle = false;
+        return value;
     }
 
     private void sendResponse(Channel channel, SocketAddress remoteAddress,
@@ -252,8 +281,8 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 position.set("r0UserId", Integer.parseInt(userId));
                 position.set("r0Timestamp", Long.parseLong(timestamp));
 
-                if (consumeAuthorizedPendingCommand()) {
-                    serverLockCycle = true;
+                if (consumeAuthorizedPendingCommand(deviceSession.getDeviceId())) {
+                    setServerLockCycle(deviceSession.getDeviceId(), true);
                     if (op == 0 || op == 2 || op == 6) {
                         sendResponse(channel, remoteAddress, responseHeader, imei,
                                 "L0," + key + "," + userId + "," + timestamp);
@@ -261,7 +290,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                         sendResponse(channel, remoteAddress, responseHeader, imei, "L1," + key);
                     }
                 } else {
-                    serverLockCycle = false;
+                    setServerLockCycle(deviceSession.getDeviceId(), false);
                     position.set("unauthorizedRequest", true);
                     position.addAlarm(Position.ALARM_TAMPERING);
                 }
@@ -270,8 +299,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             case "L0" -> {
                 // Unlock result — two-way verification ACK required
                 int status = safeInt(values, dataIndex);
-                boolean serverOrigin = serverLockCycle;
-                serverLockCycle = false;
+                boolean serverOrigin = consumeServerLockCycle(deviceSession.getDeviceId());
                 position.set(Position.KEY_RESULT, String.valueOf(status));
                 position.set(Position.KEY_LOCK, status != 0); // false = unlocked (success)
                 if (!safeStr(values, dataIndex + 1).isEmpty()) {
@@ -290,8 +318,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             case "L1" -> {
                 // Lock result — two-way verification ACK required
                 int status = safeInt(values, dataIndex);
-                boolean serverOrigin = serverLockCycle;
-                serverLockCycle = false;
+                boolean serverOrigin = consumeServerLockCycle(deviceSession.getDeviceId());
                 position.set(Position.KEY_RESULT, String.valueOf(status));
                 position.set(Position.KEY_LOCK, status == 0); // true = locked (success)
                 if (!safeStr(values, dataIndex + 1).isEmpty()) {

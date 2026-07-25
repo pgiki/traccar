@@ -1,16 +1,36 @@
 package org.traccar.protocol;
 
+import io.netty.channel.Channel;
 import org.junit.jupiter.api.Test;
+import org.traccar.Protocol;
 import org.traccar.ProtocolTest;
+import org.traccar.config.Config;
+import org.traccar.database.CommandsManager;
+import org.traccar.database.MediaManager;
+import org.traccar.database.StatisticsManager;
 import org.traccar.helper.UnitsConverter;
 import org.traccar.model.Command;
+import org.traccar.model.Device;
 import org.traccar.model.Position;
+import org.traccar.session.ConnectionManager;
+import org.traccar.session.DeviceSession;
+import org.traccar.session.cache.CacheManager;
+
+import java.net.SocketAddress;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
 
@@ -24,6 +44,65 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         assertEquals(114.14369, OmniEbikeProtocolDecoder.parseCoordinate("11408.6214", "E"), 1e-5);
         // Western hemisphere negates
         assertEquals(-114.14369, OmniEbikeProtocolDecoder.parseCoordinate("11408.6214", "W"), 1e-5);
+    }
+
+    /**
+     * BaseTest maps every uniqueId to deviceId=1. This inject assigns a stable id per IMEI
+     * so interleaved multi-device auth state can be verified on one decoder instance.
+     */
+    private OmniEbikeProtocolDecoder injectPerUniqueId(OmniEbikeProtocolDecoder decoder) throws Exception {
+        var config = new Config();
+        decoder.setConfig(config);
+        var device = mock(Device.class);
+        when(device.getId()).thenReturn(1L);
+        var cacheManager = mock(CacheManager.class);
+        when(cacheManager.getConfig()).thenReturn(config);
+        when(cacheManager.getObject(eq(Device.class), anyLong())).thenReturn(device);
+        decoder.setCacheManager(cacheManager);
+
+        Map<String, Long> idsByUniqueId = new HashMap<>();
+        AtomicLong nextId = new AtomicLong(1L);
+        var connectionManager = mock(ConnectionManager.class);
+        when(connectionManager.getDeviceSession(any(), any(), any(), any(String[].class))).thenAnswer(invocation -> {
+            Object[] args = invocation.getArguments();
+            String uniqueId = (String) args[3];
+            long deviceId = idsByUniqueId.computeIfAbsent(uniqueId, key -> nextId.getAndIncrement());
+            return new DeviceSession(
+                    deviceId, uniqueId, null, mock(Protocol.class), mock(Channel.class), mock(SocketAddress.class));
+        });
+        decoder.setConnectionManager(connectionManager);
+        decoder.setStatisticsManager(mock(StatisticsManager.class));
+        decoder.setMediaManager(mock(MediaManager.class));
+        decoder.setCommandsManager(mock(CommandsManager.class));
+        return decoder;
+    }
+
+    @Test
+    public void testAuthStateIsolatedPerDevice() throws Exception {
+        var decoder = injectPerUniqueId(new OmniEbikeProtocolDecoder(null));
+
+        Object deviceA = decoder.decode(null, null, text("*SCOR,OM,123456789123456,Q0,412,80,28#"));
+        Object deviceB = decoder.decode(null, null, text("*SCOR,OM,867584030387299,Q0,412,80,28#"));
+        assertNotNull(deviceA);
+        assertNotNull(deviceB);
+        long deviceAId = ((Position) deviceA).getDeviceId();
+        long deviceBId = ((Position) deviceB).getDeviceId();
+        assertTrue(deviceAId != deviceBId);
+
+        decoder.setPendingCommand(deviceAId, Command.TYPE_ENGINE_RESUME);
+        decoder.decode(null, null, text("*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"));
+
+        // Unsolicited R0 from B must not clear A's server lock cycle
+        Object unauthorizedB = decoder.decode(null, null,
+                text("*SCOR,OM,867584030387299,R0,0,55,999,1497689816#"));
+        assertNotNull(unauthorizedB);
+        assertTrue((Boolean) ((Position) unauthorizedB).getAttributes().get("unauthorizedRequest"));
+
+        Object deviceAUnlock = decoder.decode(null, null,
+                text("*SCOR,OM,123456789123456,L0,0,1234,1497689816#"));
+        assertNotNull(deviceAUnlock);
+        assertFalse(((Position) deviceAUnlock).hasAttribute("localOperation"));
+        assertNull(((Position) deviceAUnlock).getAttributes().get(Position.KEY_ALARM));
     }
 
     @Test
@@ -149,7 +228,11 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 Position.KEY_RESULT, "3");
 
         // --- R0 authorized then L0: no localOperation alarm ---
-        decoder.setPendingCommand(Command.TYPE_ENGINE_RESUME);
+        Position knownDevice = (Position) decoder.decode(null, null,
+                text("*SCOR,OM,123456789123456,Q0,412,80,28#"));
+        assertNotNull(knownDevice);
+        long deviceId = knownDevice.getDeviceId();
+        decoder.setPendingCommand(deviceId, Command.TYPE_ENGINE_RESUME);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
                 "r0Op", 0);
