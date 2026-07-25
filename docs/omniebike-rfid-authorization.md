@@ -22,7 +22,23 @@ Local/offline RFID acceptance **must be disabled** on the Omni reader/ECU before
    - Lock state does **not** change until the events server authorizes and Traccar sends `R0` → `L0`/`L1`
 5. Rejection check: an unknown or bank card must produce either no unlock, or a `C0` that the events server denies (bike stays locked).
 
+## Decoding outbound ACK frames
+
+Hex dumps such as `ffff2a53434f532c4f4d2c...,4c31230a` are **Traccar → device** acknowledgements (log direction `>`), not unlock commands and not card taps:
+
+| Hex suffix | Decoded ASCII | Meaning |
+|------------|---------------|---------|
+| `...,4c30230a` | `*SCOS,OM,<IMEI>,L0#\n` | Two-way ACK for unlock result |
+| `...,4c31230a` | `*SCOS,OM,<IMEI>,L1#\n` | Two-way ACK for lock result |
+| `...,4530230a` | `*SCOS,OM,<IMEI>,E0#\n` | ACK for controller error |
+
+These are required by the Omni protocol. Removing them causes device retries.
+
 ## Traccar behavior
+
+### Server-authorized unlock/lock
+
+Traccar relays authenticated `L0`/`L1` **only** after a server-issued `R0` (`engineResume`, `engineStop`, or custom `R0,...`). Unsolicited `R0` from the device is **not** relayed; Traccar sets `unauthorizedRequest=true` and emits `alarm=tampering`.
 
 When `C0` arrives, Traccar:
 
@@ -31,14 +47,31 @@ When `C0` arrives, Traccar:
 3. Forwards the event to `event.forward.url` when configured.
 4. Does **not** unlock automatically.
 
-Vehicle lock state on heartbeats (`H0`), vehicle data (`S6`), and lock results (`L0`/`L1`) uses the standard attribute **`lock`** (boolean). `L0`/`L1` also include `operationUserId` / `operationSequence` for correlation and emit `commandResult`.
+### Local / offline RFID (until hardware is fixed)
 
-Controller faults (`E0`) emit a standard **`alarm`** event with alarm type `fault` and `status` set to the controller error code.
+If the ECU still authorizes cards locally, Traccar sees unsolicited successful `L0`/`L1` (often with a constant `operationUserId` such as `1`). Those produce a standard **`alarm`** event:
+
+| Source | Attributes | Meaning |
+|--------|------------|---------|
+| Unsolicited `L0` success | `alarm=unlock`, `localOperation=true` | Bike unlocked itself |
+| Unsolicited `L1` success | `alarm=lock`, `localOperation=true` | Bike locked itself |
+
+Treat `localOperation` as an **unauthorized ride signal** until local RFID is disabled and `C0` is reported.
+
+Vehicle lock state on heartbeats (`H0`), vehicle data (`S6`), and lock results (`L0`/`L1`) uses the standard attribute **`lock`** (boolean). Server-originated `L0`/`L1` also emit `commandResult` with `operationUserId` / `operationSequence`.
+
+Controller faults (`E0`) emit `alarm=fault` only when the error code is **non-zero**, with `status` set to that code.
 
 ## Events-server workflow
 
 ```text
 C0 tap → cardRead event → authorize → custom R0 → (decoder relays L0/L1) → commandResult
+```
+
+While local RFID remains enabled:
+
+```text
+Local tap → unsolicited L0/L1 → alarm unlock/lock + localOperation → event.forward.url
 ```
 
 ### 1. Receive `cardRead`
@@ -81,7 +114,7 @@ Where:
 - `userId` is your internal rider/user id (0–4294967295)
 - `operationSequence` is a unique unix-second (or monotonic) value for replay protection
 
-Traccar’s Omni decoder receives the IoT `R0` reply (with generated KEY) and automatically sends authenticated `L0` or `L1`.
+Traccar registers the pending `R0`, receives the IoT `R0` reply (with generated KEY), and only then sends authenticated `L0` or `L1`.
 
 Example Traccar API body:
 
@@ -107,5 +140,6 @@ Match `operationUserId` / `operationSequence` (and device) to the pending author
 - [ ] Unknown card tap → `cardRead` (if hardware reports `C0`) and **no** unlock
 - [ ] Authorized card → one `cardRead`, one `R0`/`L0` or `R0`/`L1` exchange, one successful `commandResult`
 - [ ] Same card tapped twice → two `cardRead` events
-- [ ] Events server down → bike stays locked
-- [ ] No card can unlock without a preceding forwarded `C0` and an events-server decision
+- [ ] Events server down → bike stays locked (and Traccar does not relay unsolicited `R0`)
+- [ ] Local RFID tap (no `C0`) → forwarded `alarm` with `localOperation=true` (`unlock` or `lock`)
+- [ ] No card can unlock via Traccar without a preceding forwarded `C0` and an events-server decision

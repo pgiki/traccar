@@ -119,6 +119,18 @@ public class OmniEbikeProtocolEncoderTest extends ProtocolTest {
     }
 
     @Test
+    public void testEncodeCustomR0() throws Exception {
+        var encoder = inject(new OmniEbikeProtocolEncoder(null));
+
+        Command command = new Command();
+        command.setDeviceId(1);
+        command.setType(Command.TYPE_CUSTOM);
+        command.set(Command.KEY_DATA, "R0,2,20,1001,1710000000");
+
+        assertEquals(expected("R0,2,20,1001,1710000000"), encoder.encodeCommand(null, command));
+    }
+
+    @Test
     public void testEncodeCustomK0() throws Exception {
         var encoder = inject(new OmniEbikeProtocolEncoder(null));
 

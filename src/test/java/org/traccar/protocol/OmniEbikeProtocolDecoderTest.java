@@ -3,11 +3,13 @@ package org.traccar.protocol;
 import org.junit.jupiter.api.Test;
 import org.traccar.ProtocolTest;
 import org.traccar.helper.UnitsConverter;
+import org.traccar.model.Command;
 import org.traccar.model.Position;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
@@ -68,7 +70,7 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 "*SCOR,OM,123456789123456,H0,1,380,20,55,1#"),
                 Position.KEY_CHARGE, true);
 
-        // --- R0: Unlock/lock request response (op=0 = unlock, key=55) ---
+        // --- R0: Unsolicited (no pending server command) → tampering, no L0/L1 relay ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
                 "r0Op", 0);
@@ -78,13 +80,22 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
                 "r0UserId", 1234);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
+                "unauthorizedRequest", true);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
+                Position.KEY_ALARM, Position.ALARM_TAMPERING);
 
-        // --- R0: Lock request (op=1) ---
+        // --- R0: Lock request (op=1), still unauthorized without pending ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,R0,1,55,1234,1497689816#"),
                 "r0Op", 1);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,R0,1,55,1234,1497689816#"),
+                "unauthorizedRequest", true);
 
-        // --- L0: Unlock result (success) ---
+        // --- L0: Unsolicited unlock success (local RFID) ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L0,0,1234,1497689816#"),
                 Position.KEY_RESULT, "0");
@@ -97,13 +108,19 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L0,0,1234,1497689816#"),
                 "operationSequence", 1497689816L);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L0,0,1,1784980865#"),
+                Position.KEY_ALARM, Position.ALARM_UNLOCK);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L0,0,1,1784980865#"),
+                "localOperation", true);
 
-        // --- L0: Unlock result (KEY error) ---
+        // --- L0: Unlock result (KEY error) — no local unlock alarm ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L0,2,1234,1497689816#"),
                 Position.KEY_RESULT, "2");
 
-        // --- L1: Lock result (success, 3 min ride) ---
+        // --- L1: Unsolicited lock success (local RFID) ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L1,0,1234,1497689816,3#"),
                 Position.KEY_RESULT, "0");
@@ -119,11 +136,32 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L1,0,1234,1497689816,3#"),
                 "operationSequence", 1497689816L);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L1,0,1,1784980865,3#"),
+                Position.KEY_ALARM, Position.ALARM_LOCK);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L1,0,1,1784980865,3#"),
+                "localOperation", true);
 
         // --- L1: Lock result (riding in progress, cannot lock) ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L1,3,1234,1497689816,0#"),
                 Position.KEY_RESULT, "3");
+
+        // --- R0 authorized then L0: no localOperation alarm ---
+        decoder.setPendingCommand(Command.TYPE_ENGINE_RESUME);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
+                "r0Op", 0);
+        Object serverUnlock = decoder.decode(null, null,
+                text("*SCOR,OM,123456789123456,L0,0,1234,1497689816#"));
+        assertNotNull(serverUnlock);
+        assertFalse(((Position) serverUnlock).hasAttribute("localOperation"));
+        assertNull(((Position) serverUnlock).getAttributes().get(Position.KEY_ALARM));
+        // Pending consumed — next unsolicited R0 is unauthorized again
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,R0,0,55,1234,1497689816#"),
+                "unauthorizedRequest", true);
 
         // --- S5: IoT device settings ---
         verifyAttribute(decoder, text(
@@ -294,6 +332,18 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,E0,1#"),
                 Position.KEY_STATUS, 1);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,E0,262#"),
+                Position.KEY_ALARM, Position.ALARM_FAULT);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,E0,262#"),
+                Position.KEY_STATUS, 262);
+        // Zero error code: status only, no fault alarm
+        Object e0Clear = decoder.decode(null, null, text("*SCOR,OM,123456789123456,E0,0#"));
+        assertNotNull(e0Clear);
+        assertEquals(0, ((Position) e0Clear).getInteger(Position.KEY_STATUS));
+        assertNull(((Position) e0Clear).getAttributes().get(Position.KEY_ALARM));
+
 
         // --- U0: Upgrade check (IoT-initiated) ---
         verifyAttribute(decoder, text(

@@ -32,9 +32,26 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
     private static final String VENDOR = "OM";
     private static final String RESPONSE_SCOOTER = "*SCOS";
     private static final String RESPONSE_BEACON = "*CMDS";
+    private static final long PENDING_COMMAND_TIMEOUT_MS = 30_000L;
+
+    private String pendingCommand;
+    private long pendingCommandExpiry;
+    private boolean serverLockCycle;
 
     public OmniEbikeProtocolDecoder(Protocol protocol) {
         super(protocol);
+    }
+
+    public void setPendingCommand(String type) {
+        this.pendingCommand = type;
+        this.pendingCommandExpiry = System.currentTimeMillis() + PENDING_COMMAND_TIMEOUT_MS;
+    }
+
+    private boolean consumeAuthorizedPendingCommand() {
+        boolean authorized = pendingCommand != null && System.currentTimeMillis() < pendingCommandExpiry;
+        pendingCommand = null;
+        pendingCommandExpiry = 0L;
+        return authorized;
     }
 
     private void sendResponse(Channel channel, SocketAddress remoteAddress,
@@ -224,7 +241,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
             case "R0" -> {
                 // Unlock/lock request response — IoT returns session KEY
-                // Decoder auto-relays the appropriate lock/unlock command using the key
+                // Relay L0/L1 only when the server previously sent R0 (pending command)
                 int op = safeInt(values, dataIndex);
                 String key = safeStr(values, dataIndex + 1);
                 String userId = safeStr(values, dataIndex + 2);
@@ -235,17 +252,26 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 position.set("r0UserId", Integer.parseInt(userId));
                 position.set("r0Timestamp", Long.parseLong(timestamp));
 
-                if (op == 0 || op == 2 || op == 6) {
-                    sendResponse(channel, remoteAddress, responseHeader, imei,
-                            "L0," + key + "," + userId + "," + timestamp);
-                } else if (op == 1 || op == 3) {
-                    sendResponse(channel, remoteAddress, responseHeader, imei, "L1," + key);
+                if (consumeAuthorizedPendingCommand()) {
+                    serverLockCycle = true;
+                    if (op == 0 || op == 2 || op == 6) {
+                        sendResponse(channel, remoteAddress, responseHeader, imei,
+                                "L0," + key + "," + userId + "," + timestamp);
+                    } else if (op == 1 || op == 3) {
+                        sendResponse(channel, remoteAddress, responseHeader, imei, "L1," + key);
+                    }
+                } else {
+                    serverLockCycle = false;
+                    position.set("unauthorizedRequest", true);
+                    position.addAlarm(Position.ALARM_TAMPERING);
                 }
             }
 
             case "L0" -> {
                 // Unlock result — two-way verification ACK required
                 int status = safeInt(values, dataIndex);
+                boolean serverOrigin = serverLockCycle;
+                serverLockCycle = false;
                 position.set(Position.KEY_RESULT, String.valueOf(status));
                 position.set(Position.KEY_LOCK, status != 0); // false = unlocked (success)
                 if (!safeStr(values, dataIndex + 1).isEmpty()) {
@@ -254,12 +280,18 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 if (!safeStr(values, dataIndex + 2).isEmpty()) {
                     position.set("operationSequence", Long.parseLong(safeStr(values, dataIndex + 2)));
                 }
+                if (status == 0 && !serverOrigin) {
+                    position.set("localOperation", true);
+                    position.addAlarm(Position.ALARM_UNLOCK);
+                }
                 sendResponse(channel, remoteAddress, responseHeader, imei, "L0");
             }
 
             case "L1" -> {
                 // Lock result — two-way verification ACK required
                 int status = safeInt(values, dataIndex);
+                boolean serverOrigin = serverLockCycle;
+                serverLockCycle = false;
                 position.set(Position.KEY_RESULT, String.valueOf(status));
                 position.set(Position.KEY_LOCK, status == 0); // true = locked (success)
                 if (!safeStr(values, dataIndex + 1).isEmpty()) {
@@ -271,6 +303,10 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 if (values.length > dataIndex + 3 && !safeStr(values, dataIndex + 3).isEmpty()) {
                     int rideMins = safeInt(values, dataIndex + 3);
                     position.set(Position.KEY_DRIVING_TIME, (long) rideMins * 60L * 1000L);
+                }
+                if (status == 0 && !serverOrigin) {
+                    position.set("localOperation", true);
+                    position.addAlarm(Position.ALARM_LOCK);
                 }
                 sendResponse(channel, remoteAddress, responseHeader, imei, "L1");
             }
@@ -378,9 +414,11 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             }
 
             case "E0" -> {
-                // Controller error code — ACK required; emit standard fault alarm
+                // Controller error code — ACK required; fault only when code is non-zero
                 int errorCode = safeInt(values, dataIndex);
-                position.addAlarm(Position.ALARM_FAULT);
+                if (errorCode != 0) {
+                    position.addAlarm(Position.ALARM_FAULT);
+                }
                 position.set(Position.KEY_STATUS, errorCode);
                 sendResponse(channel, remoteAddress, responseHeader, imei, "E0");
             }

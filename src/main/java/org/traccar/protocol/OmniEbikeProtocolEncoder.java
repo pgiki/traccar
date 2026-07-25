@@ -30,15 +30,33 @@ public class OmniEbikeProtocolEncoder extends BaseProtocolEncoder {
         return String.format("\u00ff\u00ff*SCOS,OM,%s,%s#\n", getUniqueId(command.getDeviceId()), cmd);
     }
 
+    private void registerPendingCommand(Channel channel, String type) {
+        if (channel != null) {
+            OmniEbikeProtocolDecoder decoder = channel.pipeline().get(OmniEbikeProtocolDecoder.class);
+            if (decoder != null) {
+                decoder.setPendingCommand(type);
+            }
+        }
+    }
+
     @Override
     protected Object encodeCommand(Channel channel, Command command) {
         return switch (command.getType()) {
-            case Command.TYPE_CUSTOM ->
-                    formatCommand(command, command.getString(Command.KEY_DATA));
-            case Command.TYPE_ENGINE_STOP ->
-                    formatCommand(command, "R0,1,20,0," + System.currentTimeMillis() / 1000);
-            case Command.TYPE_ENGINE_RESUME ->
-                    formatCommand(command, "R0,0,20,0," + System.currentTimeMillis() / 1000);
+            case Command.TYPE_CUSTOM -> {
+                String data = command.getString(Command.KEY_DATA);
+                if (data != null && data.startsWith("R0")) {
+                    registerPendingCommand(channel, command.getType());
+                }
+                yield formatCommand(command, data);
+            }
+            case Command.TYPE_ENGINE_STOP -> {
+                registerPendingCommand(channel, command.getType());
+                yield formatCommand(command, "R0,1,20,0," + System.currentTimeMillis() / 1000);
+            }
+            case Command.TYPE_ENGINE_RESUME -> {
+                registerPendingCommand(channel, command.getType());
+                yield formatCommand(command, "R0,0,20,0," + System.currentTimeMillis() / 1000);
+            }
             case Command.TYPE_POSITION_SINGLE ->
                     formatCommand(command, "D0");
             case Command.TYPE_POSITION_PERIODIC ->
