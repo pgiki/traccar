@@ -45,6 +45,7 @@ import org.traccar.handler.TimeHandler;
 import org.traccar.handler.events.AlarmEventHandler;
 import org.traccar.handler.events.BaseEventHandler;
 import org.traccar.handler.events.BehaviorEventHandler;
+import org.traccar.handler.events.CardEventHandler;
 import org.traccar.handler.events.CommandResultEventHandler;
 import org.traccar.handler.events.DriverEventHandler;
 import org.traccar.handler.events.FuelEventHandler;
@@ -127,7 +128,8 @@ public class ProcessingHandler extends ChannelInboundHandlerAdapter implements B
                 AlarmEventHandler.class,
                 IgnitionEventHandler.class,
                 MaintenanceEventHandler.class,
-                DriverEventHandler.class)
+                DriverEventHandler.class,
+                CardEventHandler.class)
                 .map((clazz) -> (BaseEventHandler) injector.getInstance(clazz))
                 .filter(Objects::nonNull)
                 .toList();

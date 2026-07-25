@@ -28,6 +28,11 @@ import java.net.SocketAddress;
 
 public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
+    private static final String HEADER_PREFIX = "\u00ff\u00ff";
+    private static final String VENDOR = "OM";
+    private static final String RESPONSE_SCOOTER = "*SCOS";
+    private static final String RESPONSE_BEACON = "*CMDS";
+
     public OmniEbikeProtocolDecoder(Protocol protocol) {
         super(protocol);
     }
@@ -35,7 +40,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
     private void sendResponse(Channel channel, SocketAddress remoteAddress,
                               String responseHeader, String imei, String cmd) {
         if (channel != null) {
-            String response = "\u00ff\u00ff" + responseHeader + ",OM," + imei + "," + cmd + "#\n";
+            String response = HEADER_PREFIX + responseHeader + "," + VENDOR + "," + imei + "," + cmd + "#\n";
             channel.writeAndFlush(new NetworkMessage(response, remoteAddress));
         }
     }
@@ -60,6 +65,28 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             return values[index].trim();
         }
         return "";
+    }
+
+    /**
+     * Parse S6 mileage as meters. Omni TCP S6 units are controller-defined; related
+     * Omni mileage fields use 10 m steps, so numeric values are stored as value * 10.
+     * Non-numeric strings (legacy example cell fields) are ignored.
+     */
+    static Long parseOdometerMeters(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        try {
+            long value;
+            if (raw.length() > 2 && raw.regionMatches(true, 0, "0x", 0, 2)) {
+                value = Long.parseLong(raw.substring(2), 16);
+            } else {
+                value = Long.parseLong(raw);
+            }
+            return value * 10L;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     @Override
@@ -100,7 +127,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
         }
 
         // Response header mirrors the incoming direction
-        String responseHeader = isBeacon ? "*CMDS" : "*SCOS";
+        String responseHeader = isBeacon ? RESPONSE_BEACON : RESPONSE_SCOOTER;
 
         // --- D0: GPS location ---
         if (type.equals("D0")) {
@@ -110,9 +137,10 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
             Position position = new Position(getProtocolName());
             position.setDeviceId(deviceSession.getDeviceId());
+            position.set(Position.KEY_TYPE, type);
 
             int trigger = safeInt(values, dataIndex);
-            position.set("locationTrigger", trigger);
+            position.set(Position.KEY_EVENT, trigger);
 
             String timeStr = safeStr(values, dataIndex + 1);
             String validity = safeStr(values, dataIndex + 2);
@@ -162,6 +190,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
         if (type.equals("D1")) {
             Position position = new Position(getProtocolName());
             position.setDeviceId(deviceSession.getDeviceId());
+            position.set(Position.KEY_TYPE, type);
             getLastLocation(position, null);
             if (!safeStr(values, dataIndex).isEmpty()) {
                 position.set("trackingInterval", safeInt(values, dataIndex));
@@ -172,6 +201,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
         // --- All other commands ---
         Position position = new Position(getProtocolName());
         position.setDeviceId(deviceSession.getDeviceId());
+        position.set(Position.KEY_TYPE, type);
         getLastLocation(position, null);
 
         switch (type) {
@@ -185,7 +215,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
             case "H0" -> {
                 // Heartbeat: lock status, IoT voltage, RSSI, vehicle battery %, charging
-                position.set(Position.KEY_BLOCKED, safeInt(values, dataIndex) == 1);
+                position.set(Position.KEY_LOCK, safeInt(values, dataIndex) == 1);
                 position.set(Position.KEY_POWER, safeInt(values, dataIndex + 1) / 100.0);
                 position.set(Position.KEY_RSSI, safeInt(values, dataIndex + 2));
                 position.set(Position.KEY_BATTERY_LEVEL, safeInt(values, dataIndex + 3));
@@ -218,6 +248,12 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 int status = safeInt(values, dataIndex);
                 position.set(Position.KEY_RESULT, String.valueOf(status));
                 position.set(Position.KEY_LOCK, status != 0); // false = unlocked (success)
+                if (!safeStr(values, dataIndex + 1).isEmpty()) {
+                    position.set("operationUserId", safeInt(values, dataIndex + 1));
+                }
+                if (!safeStr(values, dataIndex + 2).isEmpty()) {
+                    position.set("operationSequence", Long.parseLong(safeStr(values, dataIndex + 2)));
+                }
                 sendResponse(channel, remoteAddress, responseHeader, imei, "L0");
             }
 
@@ -226,6 +262,12 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 int status = safeInt(values, dataIndex);
                 position.set(Position.KEY_RESULT, String.valueOf(status));
                 position.set(Position.KEY_LOCK, status == 0); // true = locked (success)
+                if (!safeStr(values, dataIndex + 1).isEmpty()) {
+                    position.set("operationUserId", safeInt(values, dataIndex + 1));
+                }
+                if (!safeStr(values, dataIndex + 2).isEmpty()) {
+                    position.set("operationSequence", Long.parseLong(safeStr(values, dataIndex + 2)));
+                }
                 if (values.length > dataIndex + 3 && !safeStr(values, dataIndex + 3).isEmpty()) {
                     int rideMins = safeInt(values, dataIndex + 3);
                     position.set(Position.KEY_DRIVING_TIME, (long) rideMins * 60L * 1000L);
@@ -249,14 +291,16 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 position.setSpeed(UnitsConverter.knotsFromKph(safeInt(values, dataIndex + 2) / 10.0));
                 position.set(Position.KEY_CHARGE, safeInt(values, dataIndex + 3) == 1);
                 position.set(Position.KEY_POWER, safeInt(values, dataIndex + 4) / 10.0);
-                position.set("battery2Voltage", safeInt(values, dataIndex + 5) / 10.0);
-                position.set(Position.KEY_BLOCKED, safeInt(values, dataIndex + 6) == 1);
+                position.set(Position.KEY_BATTERY, safeInt(values, dataIndex + 5) / 10.0);
+                position.set(Position.KEY_LOCK, safeInt(values, dataIndex + 6) == 1);
                 position.set(Position.KEY_RSSI, safeInt(values, dataIndex + 7));
-                if (!safeStr(values, dataIndex + 8).isEmpty()) {
-                    position.set("tripMileage", safeStr(values, dataIndex + 8));
+                Long tripMeters = parseOdometerMeters(safeStr(values, dataIndex + 8));
+                if (tripMeters != null) {
+                    position.set(Position.KEY_ODOMETER_TRIP, tripMeters);
                 }
-                if (!safeStr(values, dataIndex + 9).isEmpty()) {
-                    position.set("totalMileage", safeStr(values, dataIndex + 9));
+                Long totalMeters = parseOdometerMeters(safeStr(values, dataIndex + 9));
+                if (totalMeters != null) {
+                    position.set(Position.KEY_ODOMETER, totalMeters);
                 }
             }
 
@@ -264,7 +308,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 // Vehicle settings 1 echo-back: headlight, speed mode, throttle, taillight
                 position.set("headlight", safeInt(values, dataIndex));
                 position.set("speedMode", safeInt(values, dataIndex + 1));
-                position.set("throttle", safeInt(values, dataIndex + 2));
+                position.set(Position.KEY_THROTTLE, safeInt(values, dataIndex + 2));
                 position.set("taillight", safeInt(values, dataIndex + 3));
             }
 
@@ -275,9 +319,14 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 position.set("startMode", safeInt(values, dataIndex + 2));
                 position.set("speedModeBtn", safeInt(values, dataIndex + 3));
                 position.set("headlightBtn", safeInt(values, dataIndex + 4));
-                position.set("lowSpeedLimit", safeInt(values, dataIndex + 5));
-                position.set("midSpeedLimit", safeInt(values, dataIndex + 6));
-                position.set("highSpeedLimit", safeInt(values, dataIndex + 7));
+                int lowLimit = safeInt(values, dataIndex + 5);
+                int midLimit = safeInt(values, dataIndex + 6);
+                int highLimit = safeInt(values, dataIndex + 7);
+                position.set("lowSpeedLimit", lowLimit);
+                position.set("midSpeedLimit", midLimit);
+                position.set("highSpeedLimit", highLimit);
+                // Canonical limit for overspeed tooling (Omni limits are km/h)
+                position.set(Position.KEY_SPEED_LIMIT, UnitsConverter.knotsFromKph(highLimit));
             }
 
             case "W0" -> {
@@ -329,8 +378,10 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             }
 
             case "E0" -> {
-                // Controller error code — ACK required
-                position.set("controllerError", safeInt(values, dataIndex));
+                // Controller error code — ACK required; emit standard fault alarm
+                int errorCode = safeInt(values, dataIndex);
+                position.addAlarm(Position.ALARM_FAULT);
+                position.set(Position.KEY_STATUS, errorCode);
                 sendResponse(channel, remoteAddress, responseHeader, imei, "E0");
             }
 
@@ -404,7 +455,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
             case "M0" -> {
                 // Bluetooth MAC address
-                position.set("btMac", safeStr(values, dataIndex));
+                position.set("bleMac", safeStr(values, dataIndex));
             }
 
             case "V1" -> {
@@ -415,13 +466,17 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             }
 
             case "C0" -> {
-                // RFID card unlock request from IoT (doc typo uses *SCOS header, handle regardless)
-                position.set("rfidRequest", safeInt(values, dataIndex));
-                position.set("rfidCardType", safeInt(values, dataIndex + 1));
-                if (!safeStr(values, dataIndex + 2).isEmpty()) {
-                    position.set("rfidCardId", safeStr(values, dataIndex + 2));
+                // RFID card unlock/lock request from IoT (doc typo uses *SCOS header, handle regardless)
+                // No auto-ack: events server must authorize, then send R0 then L0/L1
+                int request = safeInt(values, dataIndex);
+                int cardType = safeInt(values, dataIndex + 1);
+                String cardId = safeStr(values, dataIndex + 2);
+                position.set("rfidRequest", request);
+                position.set("rfidCardType", cardType);
+                if (!cardId.isEmpty()) {
+                    position.set(Position.KEY_CARD, cardId);
+                    position.set(Position.KEY_DRIVER_UNIQUE_ID, cardId);
                 }
-                // Server responds manually with L0 after card verification (no auto-ack)
             }
 
             case "B0" -> {
@@ -449,7 +504,8 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 // Beacon response uses the full *CMDS header with the extra routing field (values[3])
                 if (channel != null && isBeacon) {
                     String beaconRouting = safeStr(values, 3);
-                    String response = "\u00ff\u00ff*CMDS,OM," + imei + "," + beaconRouting + ",B0,0#\n";
+                    String response = HEADER_PREFIX + RESPONSE_BEACON + "," + VENDOR + ","
+                            + imei + "," + beaconRouting + ",B0,0#\n";
                     channel.writeAndFlush(new NetworkMessage(response, remoteAddress));
                 }
             }
@@ -470,7 +526,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                     position.set("chargingStatus", safeInt(values, dataIndex + 3));
                 }
                 if (values.length > dataIndex + 4) {
-                    position.set("chargingRxTemp", safeInt(values, dataIndex + 4));
+                    position.set(Position.PREFIX_TEMP + 1, safeInt(values, dataIndex + 4));
                 }
                 if (values.length > dataIndex + 5) {
                     position.set("chargingRxOutputVoltage", safeInt(values, dataIndex + 5) / 10.0);
@@ -485,7 +541,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                     position.set("chargingRxSwitch", safeInt(values, dataIndex + 8) == 1);
                 }
                 if (values.length > dataIndex + 9) {
-                    position.set("chargingTxTemp", safeInt(values, dataIndex + 9));
+                    position.set(Position.PREFIX_TEMP + 2, safeInt(values, dataIndex + 9));
                 }
                 if (values.length > dataIndex + 10) {
                     position.set("chargingTxVoltage", safeInt(values, dataIndex + 10) / 10.0);

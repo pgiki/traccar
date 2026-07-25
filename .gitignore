@@ -13,3 +13,6 @@ build
 .vscode
 bin
 traccar.xml
+.env
+.env.example
+docs/omni-ebike-ecu-protocol.pdf

@@ -43,7 +43,7 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         // --- H0: Heartbeat (unlocked, not charging) ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,H0,0,412,28,80,0#"),
-                Position.KEY_BLOCKED, false);
+                Position.KEY_LOCK, false);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,H0,0,412,28,80,0#"),
                 Position.KEY_POWER, 4.12);
@@ -56,11 +56,14 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,H0,0,412,28,80,0#"),
                 Position.KEY_CHARGE, false);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,H0,0,412,28,80,0#"),
+                Position.KEY_TYPE, "H0");
 
         // --- H0: Heartbeat (locked + charging) ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,H0,1,380,20,55,1#"),
-                Position.KEY_BLOCKED, true);
+                Position.KEY_LOCK, true);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,H0,1,380,20,55,1#"),
                 Position.KEY_CHARGE, true);
@@ -88,6 +91,12 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L0,0,1234,1497689816#"),
                 Position.KEY_LOCK, false);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L0,0,1234,1497689816#"),
+                "operationUserId", 1234);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L0,0,1234,1497689816#"),
+                "operationSequence", 1497689816L);
 
         // --- L0: Unlock result (KEY error) ---
         verifyAttribute(decoder, text(
@@ -104,6 +113,12 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,L1,0,1234,1497689816,3#"),
                 Position.KEY_DRIVING_TIME, 180000L);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L1,0,1234,1497689816,3#"),
+                "operationUserId", 1234);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,L1,0,1234,1497689816,3#"),
+                "operationSequence", 1497689816L);
 
         // --- L1: Lock result (riding in progress, cannot lock) ---
         verifyAttribute(decoder, text(
@@ -142,13 +157,24 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 Position.KEY_POWER, 37.2);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
-                "battery2Voltage", 37.2);
+                Position.KEY_BATTERY, 37.2);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
-                Position.KEY_BLOCKED, false);
+                Position.KEY_LOCK, false);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
                 Position.KEY_RSSI, 28);
+        // Spec example trip field is non-numeric (legacy cell-like); hex total → meters (10 m units)
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
+                Position.KEY_ODOMETER, 0x27A6L * 10L);
+        // Numeric mileage (controller units × 10 → meters)
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,100,5000#"),
+                Position.KEY_ODOMETER_TRIP, 1000L);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,100,5000#"),
+                Position.KEY_ODOMETER, 50000L);
 
         // --- S7: Vehicle settings 1 ---
         verifyAttribute(decoder, text(
@@ -159,7 +185,7 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 "speedMode", 3);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S7,0,3,0,0#"),
-                "throttle", 0);
+                Position.KEY_THROTTLE, 0);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S7,0,3,0,0#"),
                 "taillight", 0);
@@ -174,6 +200,9 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S4,0,0,0,0,0,15,20,25#"),
                 "highSpeedLimit", 25);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,S4,0,0,0,0,0,15,20,25#"),
+                Position.KEY_SPEED_LIMIT, UnitsConverter.knotsFromKph(25));
 
         // --- W0: Alarms ---
         verifyAttribute(decoder, text(
@@ -215,7 +244,10 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 "altitude", 10.0);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"),
-                "locationTrigger", 0);
+                Position.KEY_EVENT, 0);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"),
+                Position.KEY_TYPE, "D0");
 
         // --- D0: Invalid GPS (no fix) ---
         Object invalidGps = decoder.decode(null, null, text(
@@ -229,7 +261,7 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 position("2018-11-15 01:21:02.000", true, -6.133344, 106.995055));
         verifyAttribute(decoder, text(
                 "*SCOR,OM,867584030387299,D0,1,012102.00,A,0608.00062,S,10659.70331,E,12,0.69,151118,30.3,M,A#"),
-                "locationTrigger", 1);
+                Position.KEY_EVENT, 1);
 
         // Reset decoder for the rest of the tests with the original IMEI
         decoder = inject(new OmniEbikeProtocolDecoder(null));
@@ -258,7 +290,10 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         // --- E0: Controller error code ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,E0,1#"),
-                "controllerError", 1);
+                Position.KEY_ALARM, Position.ALARM_FAULT);
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,E0,1#"),
+                Position.KEY_STATUS, 1);
 
         // --- U0: Upgrade check (IoT-initiated) ---
         verifyAttribute(decoder, text(
@@ -337,7 +372,7 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         // --- M0: Bluetooth MAC address ---
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,M0,12:34:56:78:90:AB#"),
-                "btMac", "12:34:56:78:90:AB");
+                "bleMac", "12:34:56:78:90:AB");
 
         // --- V1: Device sound settings ---
         verifyAttribute(decoder, text(
@@ -359,7 +394,21 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 "rfidCardType", 0);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,C0,0,0,000000001A2B3C4D,0#"),
-                "rfidCardId", "000000001A2B3C4D");
+                Position.KEY_CARD, "000000001A2B3C4D");
+        verifyAttribute(decoder, text(
+                "*SCOR,OM,123456789123456,C0,0,0,000000001A2B3C4D,0#"),
+                Position.KEY_DRIVER_UNIQUE_ID, "000000001A2B3C4D");
+
+        // --- C0: Accept doc typo *SCOS header and lock request ---
+        verifyAttribute(decoder, text(
+                "*SCOS,OM,123456789123456,C0,1,0,00000000AABBCCDD,0#"),
+                "rfidRequest", 1);
+        verifyAttribute(decoder, text(
+                "*SCOS,OM,123456789123456,C0,1,0,00000000AABBCCDD,0#"),
+                Position.KEY_CARD, "00000000AABBCCDD");
+        verifyAttribute(decoder, text(
+                "*SCOS,OM,123456789123456,C0,1,0,00000000AABBCCDD,0#"),
+                Position.KEY_DRIVER_UNIQUE_ID, "00000000AABBCCDD");
 
         // --- B0: Beacon validation (beacon found) ---
         verifyAttribute(decoder, text(
@@ -386,7 +435,7 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
                 "chargingStationImei", "ChgStation001");
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,SC,ChgStation001,0,3,2,25,372,360,500,1,30,370,1000,0,0,0#"),
-                "chargingRxTemp", 25);
+                Position.PREFIX_TEMP + 1, 25);
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,SC,ChgStation001,0,3,2,25,372,360,500,1,30,370,1000,0,0,0#"),
                 "chargingRxSwitch", true);
