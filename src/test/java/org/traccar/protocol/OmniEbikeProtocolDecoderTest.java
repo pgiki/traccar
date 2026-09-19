@@ -17,6 +17,7 @@ import org.traccar.session.DeviceSession;
 import org.traccar.session.cache.CacheManager;
 
 import java.net.SocketAddress;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -273,9 +274,14 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
                 Position.KEY_CHARGE, false);
-        verifyAttribute(decoder, text(
-                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
-                Position.KEY_POWER, 37.2);
+        // S6 voltages are traction-side and map to the standard battery key (pack wins);
+        // with no prior Q0/H0 on a fresh session, no IoT-rail power is present
+        var freshDecoder = inject(new OmniEbikeProtocolDecoder(null));
+        Object freshS6 = freshDecoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,100,5000#"));
+        assertNotNull(freshS6);
+        assertEquals(37.2, ((Position) freshS6).getAttributes().get(Position.KEY_BATTERY));
+        assertFalse(((Position) freshS6).hasAttribute(Position.KEY_POWER));
         verifyAttribute(decoder, text(
                 "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,460-00,0x27A6,220486467#"),
                 Position.KEY_BATTERY, 37.2);
@@ -580,6 +586,106 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         // --- Null: unknown command type ---
         verifyNull(decoder, text(
                 "*SCOR,OM,123456789123456,XX,somedata#"));
+    }
+
+    @Test
+    public void testBatteryBackfilledIntoLocation() throws Exception {
+
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+
+        // D0 alone carries no energy telemetry
+        Object bareD0 = decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"));
+        assertNotNull(bareD0);
+        assertFalse(((Position) bareD0).hasAttribute(Position.KEY_BATTERY_LEVEL));
+
+        // Q0 check-in backfills level + IoT-rail power into the next D0
+        assertNotNull(decoder.decode(null, null, text("*SCOR,OM,123456789123456,Q0,412,80,28#")));
+        Position d0AfterQ0 = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"));
+        assertNotNull(d0AfterQ0);
+        assertEquals(80, d0AfterQ0.getAttributes().get(Position.KEY_BATTERY_LEVEL));
+        assertEquals(4.12, d0AfterQ0.getAttributes().get(Position.KEY_POWER));
+
+        // H0 heartbeat backfills level + charging state
+        assertNotNull(decoder.decode(null, null, text("*SCOR,OM,123456789123456,H0,1,380,20,55,1#")));
+        Position d0AfterH0 = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"));
+        assertNotNull(d0AfterH0);
+        assertEquals(55, d0AfterH0.getAttributes().get(Position.KEY_BATTERY_LEVEL));
+        assertEquals(true, d0AfterH0.getAttributes().get(Position.KEY_CHARGE));
+
+        // S6 vehicle data backfills pack voltage as the standard battery
+        assertNotNull(decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,100,5000#")));
+        Position d0AfterS6 = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"));
+        assertNotNull(d0AfterS6);
+        assertEquals(37.2, d0AfterS6.getAttributes().get(Position.KEY_BATTERY));
+        assertEquals(80, d0AfterS6.getAttributes().get(Position.KEY_BATTERY_LEVEL));
+    }
+
+    @Test
+    public void testBatteryRecoveredFromLastPositionAfterRestart() throws Exception {
+
+        // Simulates a server restart: empty decoder cache, but the last stored
+        // position still carries standard battery telemetry
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+
+        Position last = position("2018-11-15 01:21:02.000", true, -6.133344, 106.995055);
+        last.set(Position.KEY_BATTERY_LEVEL, 62);
+        last.set(Position.KEY_CHARGE, true);
+        last.set(Position.KEY_BATTERY, 36.8);
+        last.set(Position.KEY_POWER, 4.1);
+        when(decoder.getCacheManager().getPosition(anyLong())).thenReturn(last);
+
+        // A bare D0 with no prior Q0/H0/S6 in this session still gets battery backfilled
+        Position d0 = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#"));
+        assertNotNull(d0);
+        assertEquals(62, d0.getAttributes().get(Position.KEY_BATTERY_LEVEL));
+        assertEquals(true, d0.getAttributes().get(Position.KEY_CHARGE));
+        assertEquals(36.8, d0.getAttributes().get(Position.KEY_BATTERY));
+        assertEquals(4.1, d0.getAttributes().get(Position.KEY_POWER));
+    }
+
+    @Test
+    public void testPackVoltageWinsForBattery() throws Exception {
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+
+        // Differing traction voltages: pack field wins for the standard battery key
+        Position s6 = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,370,372,0,28,100,5000#"));
+        assertNotNull(s6);
+        assertEquals(37.2, s6.getAttributes().get(Position.KEY_BATTERY));
+    }
+
+    @Test
+    public void testS6AnchoredWithOwnSpeed() throws Exception {
+
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+
+        Position last = position("2018-11-15 01:21:02.000", true, -6.133344, 106.995055);
+        last.setAltitude(30.3);
+        last.setSpeed(UnitsConverter.knotsFromKph(10.0));
+        last.setCourse(90.0);
+        when(decoder.getCacheManager().getPosition(anyLong())).thenReturn(last);
+
+        Date before = new Date();
+        Position s6 = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,S6,80,3,221,0,372,372,0,28,100,5000#"));
+        assertNotNull(s6);
+
+        // Anchored to last location with a fresh fix time, not marked outdated ...
+        assertFalse(s6.getOutdated());
+        assertEquals(-6.133344, s6.getLatitude(), 1e-9);
+        assertEquals(106.995055, s6.getLongitude(), 1e-9);
+        assertNotNull(s6.getFixTime());
+        assertFalse(s6.getFixTime().before(before));
+        assertNotNull(s6.getDeviceTime());
+
+        // ... and the S6-reported speed survives instead of the stale last speed
+        assertEquals(UnitsConverter.knotsFromKph(22.1), s6.getSpeed(), 1e-9);
     }
 
 }

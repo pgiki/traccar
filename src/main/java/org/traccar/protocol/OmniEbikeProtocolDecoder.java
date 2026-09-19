@@ -25,6 +25,7 @@ import org.traccar.session.DeviceSession;
 import org.traccar.model.Position;
 
 import java.net.SocketAddress;
+import java.util.Date;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
@@ -42,6 +43,99 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
     }
 
     private final ConcurrentHashMap<Long, DeviceAuthState> authByDevice = new ConcurrentHashMap<>();
+
+    /**
+     * Last known energy state per device. Location (D0) and energy (Q0/H0/S6) arrive in
+     * separate messages, unlike protocols that bundle them, so D0 positions are backfilled
+     * from this cache to keep standard battery telemetry (and the UI battery icon) alive.
+     */
+    private static final class BatteryState {
+        private Integer batteryLevel; // vehicle battery, percentage
+        private Boolean charge;
+        private Double battery; // traction pack voltage, volts
+        private Double power; // IoT module rail voltage, volts
+    }
+
+    private final ConcurrentHashMap<Long, BatteryState> batteryByDevice = new ConcurrentHashMap<>();
+
+    private BatteryState batteryState(long deviceId) {
+        return batteryByDevice.computeIfAbsent(deviceId, id -> new BatteryState());
+    }
+
+    private void injectCachedBattery(Position position, long deviceId) {
+        BatteryState state = batteryByDevice.get(deviceId);
+        if (state == null) {
+            // No status message seen yet (e.g. after a server restart): recover last known
+            // energy telemetry from the last stored position so the API stays consistent.
+            state = seedFromLastPosition(deviceId);
+            if (state == null) {
+                return;
+            }
+        }
+        if (!position.hasAttribute(Position.KEY_BATTERY_LEVEL) && state.batteryLevel != null) {
+            position.set(Position.KEY_BATTERY_LEVEL, state.batteryLevel);
+        }
+        if (!position.hasAttribute(Position.KEY_CHARGE) && state.charge != null) {
+            position.set(Position.KEY_CHARGE, state.charge);
+        }
+        if (!position.hasAttribute(Position.KEY_BATTERY) && state.battery != null) {
+            position.set(Position.KEY_BATTERY, state.battery);
+        }
+        if (!position.hasAttribute(Position.KEY_POWER) && state.power != null) {
+            position.set(Position.KEY_POWER, state.power);
+        }
+    }
+
+    private BatteryState seedFromLastPosition(long deviceId) {
+        if (getCacheManager() == null) {
+            return null;
+        }
+        Position last = getCacheManager().getPosition(deviceId);
+        if (last == null || !last.hasAttribute(Position.KEY_BATTERY_LEVEL)) {
+            return null;
+        }
+        BatteryState state = batteryState(deviceId);
+        Object level = last.getAttributes().get(Position.KEY_BATTERY_LEVEL);
+        if (level instanceof Number number) {
+            state.batteryLevel = number.intValue();
+        }
+        Object charge = last.getAttributes().get(Position.KEY_CHARGE);
+        if (charge instanceof Boolean flag) {
+            state.charge = flag;
+        }
+        Object battery = last.getAttributes().get(Position.KEY_BATTERY);
+        if (battery instanceof Number voltage) {
+            state.battery = voltage.doubleValue();
+        }
+        Object power = last.getAttributes().get(Position.KEY_POWER);
+        if (power instanceof Number voltage) {
+            state.power = voltage.doubleValue();
+        }
+        return state;
+    }
+
+    /**
+     * Anchor a timestamp-less telemetry message (S6) to the last known location with a fresh
+     * fix time, preserving its own speed. Without this, the generic outdated-location handling
+     * would overwrite the reported speed with stale data.
+     */
+    private void anchorTelemetry(Position position, long deviceId) {
+        Position last = null;
+        if (getCacheManager() != null) {
+            last = getCacheManager().getPosition(deviceId);
+        }
+        if (last != null) {
+            position.setFixTime(new Date());
+            position.setDeviceTime(position.getServerTime());
+            position.setValid(last.getValid());
+            position.setLatitude(last.getLatitude());
+            position.setLongitude(last.getLongitude());
+            position.setAltitude(last.getAltitude());
+            position.setCourse(last.getCourse());
+            position.setAccuracy(last.getAccuracy());
+            position.setOutdated(false);
+        }
+    }
 
     public OmniEbikeProtocolDecoder(Protocol protocol) {
         super(protocol);
@@ -194,6 +288,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             if (!validity.equals("A") || safeStr(values, dataIndex + 3).isEmpty()) {
                 getLastLocation(position, null);
                 position.setValid(false);
+                injectCachedBattery(position, deviceSession.getDeviceId());
                 return position;
             }
 
@@ -229,6 +324,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 position.setAltitude(Double.parseDouble(safeStr(values, dataIndex + 10)));
             }
 
+            injectCachedBattery(position, deviceSession.getDeviceId());
             return position;
         }
 
@@ -241,6 +337,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             if (!safeStr(values, dataIndex).isEmpty()) {
                 position.set("trackingInterval", safeInt(values, dataIndex));
             }
+            injectCachedBattery(position, deviceSession.getDeviceId());
             return position;
         }
 
@@ -254,18 +351,30 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
             case "Q0" -> {
                 // Check-in: IoT module voltage, vehicle battery %, signal strength
-                position.set(Position.KEY_POWER, safeInt(values, dataIndex) / 100.0);
-                position.set(Position.KEY_BATTERY_LEVEL, safeInt(values, dataIndex + 1));
+                double power = safeInt(values, dataIndex) / 100.0;
+                int batteryLevel = safeInt(values, dataIndex + 1);
+                position.set(Position.KEY_POWER, power);
+                position.set(Position.KEY_BATTERY_LEVEL, batteryLevel);
                 position.set(Position.KEY_RSSI, safeInt(values, dataIndex + 2));
+                BatteryState battery = batteryState(deviceSession.getDeviceId());
+                battery.power = power;
+                battery.batteryLevel = batteryLevel;
             }
 
             case "H0" -> {
                 // Heartbeat: lock status, IoT voltage, RSSI, vehicle battery %, charging
                 position.set(Position.KEY_LOCK, safeInt(values, dataIndex) == 1);
-                position.set(Position.KEY_POWER, safeInt(values, dataIndex + 1) / 100.0);
+                double power = safeInt(values, dataIndex + 1) / 100.0;
+                int batteryLevel = safeInt(values, dataIndex + 3);
+                boolean charge = safeInt(values, dataIndex + 4) == 1;
+                position.set(Position.KEY_POWER, power);
                 position.set(Position.KEY_RSSI, safeInt(values, dataIndex + 2));
-                position.set(Position.KEY_BATTERY_LEVEL, safeInt(values, dataIndex + 3));
-                position.set(Position.KEY_CHARGE, safeInt(values, dataIndex + 4) == 1);
+                position.set(Position.KEY_BATTERY_LEVEL, batteryLevel);
+                position.set(Position.KEY_CHARGE, charge);
+                BatteryState battery = batteryState(deviceSession.getDeviceId());
+                battery.power = power;
+                battery.batteryLevel = batteryLevel;
+                battery.charge = charge;
             }
 
             case "R0" -> {
@@ -348,13 +457,19 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
 
             case "S6" -> {
                 // Vehicle data: battery, speed, charging, voltages, lock status, signal, mileage
-                position.set(Position.KEY_BATTERY_LEVEL, safeInt(values, dataIndex));
+                int batteryLevel = safeInt(values, dataIndex);
+                position.set(Position.KEY_BATTERY_LEVEL, batteryLevel);
                 position.set("speedMode", safeInt(values, dataIndex + 1));
                 // Speed field is in 0.1 km/h units (e.g. 221 → 22.1 km/h)
                 position.setSpeed(UnitsConverter.knotsFromKph(safeInt(values, dataIndex + 2) / 10.0));
-                position.set(Position.KEY_CHARGE, safeInt(values, dataIndex + 3) == 1);
-                position.set(Position.KEY_POWER, safeInt(values, dataIndex + 4) / 10.0);
-                position.set(Position.KEY_BATTERY, safeInt(values, dataIndex + 5) / 10.0);
+                boolean charge = safeInt(values, dataIndex + 3) == 1;
+                position.set(Position.KEY_CHARGE, charge);
+                // Both voltage fields are traction-side (system bus / pack). The pack is the
+                // monitored battery (it also charges the IoT module), so the pack value wins
+                // for the standard battery key; the IoT rail stays on KEY_POWER (Q0/H0).
+                position.set(Position.KEY_BATTERY, safeInt(values, dataIndex + 4) / 10.0);
+                double packVoltage = safeInt(values, dataIndex + 5) / 10.0;
+                position.set(Position.KEY_BATTERY, packVoltage);
                 position.set(Position.KEY_LOCK, safeInt(values, dataIndex + 6) == 1);
                 position.set(Position.KEY_RSSI, safeInt(values, dataIndex + 7));
                 Long tripMeters = parseOdometerMeters(safeStr(values, dataIndex + 8));
@@ -365,6 +480,13 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 if (totalMeters != null) {
                     position.set(Position.KEY_ODOMETER, totalMeters);
                 }
+                BatteryState battery = batteryState(deviceSession.getDeviceId());
+                battery.batteryLevel = batteryLevel;
+                battery.charge = charge;
+                battery.battery = packVoltage;
+                // S6 carries its own speed but no timestamp; anchor it explicitly so the
+                // generic outdated-location handling does not overwrite the reported speed.
+                anchorTelemetry(position, deviceSession.getDeviceId());
             }
 
             case "S7" -> {
@@ -619,6 +741,12 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             default -> {
                 return null;
             }
+        }
+
+        // Beacon (B0) validation is not vehicle state; every other status message carries
+        // the last known energy telemetry so the standard keys survive on each position.
+        if (!type.equals("B0")) {
+            injectCachedBattery(position, deviceSession.getDeviceId());
         }
 
         return !position.getAttributes().isEmpty() ? position : null;

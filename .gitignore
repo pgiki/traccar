@@ -16,3 +16,4 @@ traccar.xml
 .env
 .env.example
 docs/omni-ebike-ecu-protocol.pdf
+demo/
