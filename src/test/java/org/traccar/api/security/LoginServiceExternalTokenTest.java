@@ -1,5 +1,6 @@
 package org.traccar.api.security;
 
+import com.google.inject.Provider;
 import org.junit.jupiter.api.Test;
 import org.traccar.api.signature.TokenManager;
 import org.traccar.config.Config;
@@ -41,7 +42,9 @@ public class LoginServiceExternalTokenTest {
         user.setLogin("alice");
         when(storage.getObject(eq(User.class), any(Request.class))).thenReturn(user);
 
-        LoginService loginService = new LoginService(config, storage, tokenManager, null, externalTokenAuthenticator);
+        Provider<PermissionsService> permissionsServiceProvider = () -> null;
+        LoginService loginService = new LoginService(
+                config, storage, tokenManager, null, externalTokenAuthenticator, permissionsServiceProvider);
 
         LoginResult result = loginService.login("external-token");
         assertNotNull(result);
@@ -60,7 +63,9 @@ public class LoginServiceExternalTokenTest {
         when(externalTokenAuthenticator.introspect("inactive-token")).thenReturn(
                 new ExternalTokenAuthenticator.IntrospectionResult(false, "sub", null, null, null));
 
-        LoginService loginService = new LoginService(config, storage, tokenManager, null, externalTokenAuthenticator);
+        Provider<PermissionsService> permissionsServiceProvider = () -> null;
+        LoginService loginService = new LoginService(
+                config, storage, tokenManager, null, externalTokenAuthenticator, permissionsServiceProvider);
         assertNull(loginService.login("inactive-token"));
     }
 
@@ -78,7 +83,9 @@ public class LoginServiceExternalTokenTest {
         when(storage.getObject(eq(User.class), any(Request.class))).thenReturn(null);
         when(storage.addObject(any(User.class), any(Request.class))).thenReturn(42L);
 
-        LoginService loginService = new LoginService(config, storage, tokenManager, null, externalTokenAuthenticator);
+        Provider<PermissionsService> permissionsServiceProvider = () -> null;
+        LoginService loginService = new LoginService(
+                config, storage, tokenManager, null, externalTokenAuthenticator, permissionsServiceProvider);
 
         LoginResult result = loginService.login("new-user-token");
         assertNotNull(result);

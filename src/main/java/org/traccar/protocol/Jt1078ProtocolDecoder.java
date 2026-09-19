@@ -25,6 +25,7 @@ import org.traccar.Protocol;
 import org.traccar.database.DeviceLookupService;
 import org.traccar.helper.BitUtil;
 import org.traccar.media.VideoStreamManager;
+import org.traccar.model.Device;
 
 import jakarta.inject.Inject;
 import java.net.SocketAddress;
@@ -37,8 +38,9 @@ public class Jt1078ProtocolDecoder extends BaseProtocolDecoder {
     private CompositeByteBuf frameBuffer;
     private int frameDataType;
     private long frameTimestamp;
+    private int framePayloadType;
 
-    private String streamUniqueId;
+    private long streamDeviceId;
     private int streamChannel;
 
     public Jt1078ProtocolDecoder(Protocol protocol) {
@@ -63,10 +65,11 @@ public class Jt1078ProtocolDecoder extends BaseProtocolDecoder {
 
         buf.readUnsignedInt(); // header
         buf.readUnsignedByte(); // V/P/X/CC
-        buf.readUnsignedByte(); // M/PT
+        int payloadType = buf.readUnsignedByte() & 0x7F; // M/PT
         buf.readUnsignedShort(); // index
 
-        String uniqueId = HuabaoProtocolDecoder.decodeId(buf.readSlice(6));
+        int idLength = buf.getUnsignedShort(buf.readerIndex()) == 0 ? 10 : 6;
+        String uniqueId = Jt808ProtocolDecoder.decodeId(buf.readSlice(idLength));
         int videoChannel = buf.readUnsignedByte();
         int rawType = buf.readUnsignedByte();
         int dataType = BitUtil.from(rawType, 4);
@@ -83,18 +86,19 @@ public class Jt1078ProtocolDecoder extends BaseProtocolDecoder {
             return null;
         }
 
-        if (deviceLookupService.lookup(new String[]{uniqueId}) == null) {
+        Device device = deviceLookupService.lookup(new String[]{uniqueId});
+        if (device == null) {
             return null;
         }
 
-        streamUniqueId = uniqueId;
+        streamDeviceId = device.getId();
         streamChannel = videoChannel;
 
         ByteBuf body = buf.readRetainedSlice(bodyLength);
 
         if (subpackageType == 0) {
             boolean isKeyFrame = dataType == 0;
-            streamManager.handleFrame(uniqueId, videoChannel, body, timestamp, isKeyFrame);
+            streamManager.handleFrame(streamDeviceId, videoChannel, body, timestamp, isKeyFrame, payloadType);
             body.release();
         } else if (subpackageType == 1) {
             if (frameBuffer != null) {
@@ -104,6 +108,7 @@ public class Jt1078ProtocolDecoder extends BaseProtocolDecoder {
             frameBuffer.addComponent(true, body);
             frameDataType = dataType;
             frameTimestamp = timestamp;
+            framePayloadType = payloadType;
         } else if (subpackageType == 3) {
             if (frameBuffer != null) {
                 frameBuffer.addComponent(true, body);
@@ -114,12 +119,15 @@ public class Jt1078ProtocolDecoder extends BaseProtocolDecoder {
             if (frameBuffer != null) {
                 frameBuffer.addComponent(true, body);
                 boolean isKeyFrame = frameDataType == 0;
-                streamManager.handleFrame(uniqueId, videoChannel, frameBuffer, frameTimestamp, isKeyFrame);
+                streamManager.handleFrame(
+                        streamDeviceId, videoChannel, frameBuffer, frameTimestamp, isKeyFrame, framePayloadType);
                 frameBuffer.release();
                 frameBuffer = null;
             } else {
                 body.release();
             }
+        } else {
+            body.release();
         }
 
         return null;
@@ -128,8 +136,8 @@ public class Jt1078ProtocolDecoder extends BaseProtocolDecoder {
     @Override
     public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         super.channelInactive(ctx);
-        if (streamUniqueId != null) {
-            streamManager.removeStream(streamUniqueId, streamChannel);
+        if (streamDeviceId > 0) {
+            streamManager.removeStream(streamDeviceId, streamChannel);
         }
         if (frameBuffer != null) {
             frameBuffer.release();

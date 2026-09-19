@@ -33,6 +33,7 @@ import org.traccar.model.Device;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -46,7 +47,7 @@ public class FirebaseCommandSender implements CommandSender {
     @Inject
     public FirebaseCommandSender(Config config) throws IOException {
         InputStream serviceAccount = new ByteArrayInputStream(
-                config.getString(Keys.COMMAND_CLIENT_SERVICE_ACCOUNT).getBytes());
+                config.getString(Keys.COMMAND_CLIENT_SERVICE_ACCOUNT).getBytes(StandardCharsets.UTF_8));
 
         FirebaseOptions options = FirebaseOptions.builder()
                 .setCredentials(GoogleCredentials.fromStream(serviceAccount))
@@ -100,7 +101,11 @@ public class FirebaseCommandSender implements CommandSender {
 
         var result = firebaseMessaging.sendEachForMulticast(message);
         if (result.getFailureCount() > 0) {
-            throw result.getResponses().iterator().next().getException();
+            for (var response : result.getResponses()) {
+                if (response.getException() != null) {
+                    throw response.getException();
+                }
+            }
         }
     }
 

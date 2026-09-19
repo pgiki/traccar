@@ -84,7 +84,7 @@ echo ""
 echo "==> Starting Traccar server"
 echo "    config     : $CONFIG"
 echo "    web UI     : http://localhost:8082"
-echo "    OmniEbike  : TCP port 5264"
+echo "    OmniEbike  : TCP port 5268"
 echo "    Press Ctrl+C to stop"
 echo ""
 

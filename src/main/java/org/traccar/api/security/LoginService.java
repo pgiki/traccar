@@ -15,13 +15,16 @@
  */
 package org.traccar.api.security;
 
+import com.google.inject.Provider;
 import com.warrenstrange.googleauth.GoogleAuthenticator;
 import org.traccar.api.signature.TokenManager;
 import org.traccar.config.Config;
 import org.traccar.config.Keys;
 import org.traccar.database.LdapProvider;
 import org.traccar.helper.DataConverter;
+import org.traccar.helper.SessionHelper;
 import org.traccar.helper.model.UserUtil;
+import org.traccar.model.Server;
 import org.traccar.model.User;
 import org.traccar.storage.Storage;
 import org.traccar.storage.StorageException;
@@ -32,10 +35,13 @@ import org.traccar.storage.query.Request;
 import jakarta.annotation.Nullable;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.util.Date;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -47,31 +53,53 @@ public class LoginService {
     private final TokenManager tokenManager;
     private final LdapProvider ldapProvider;
     private final ExternalTokenAuthenticator externalTokenAuthenticator;
+    private final Provider<PermissionsService> permissionsServiceProvider;
 
     private final String serviceAccountToken;
     private final boolean forceLdap;
     private final boolean forceOpenId;
+    private final boolean allowOpenIdRegistration;
 
     @Inject
     public LoginService(
-            Config config,
-            Storage storage,
-            TokenManager tokenManager,
-            @Nullable LdapProvider ldapProvider,
-            @Nullable ExternalTokenAuthenticator externalTokenAuthenticator) {
+            Config config, Storage storage, TokenManager tokenManager, @Nullable LdapProvider ldapProvider,
+            @Nullable ExternalTokenAuthenticator externalTokenAuthenticator,
+            Provider<PermissionsService> permissionsServiceProvider) {
         this.storage = storage;
         this.config = config;
         this.tokenManager = tokenManager;
         this.ldapProvider = ldapProvider;
         this.externalTokenAuthenticator = externalTokenAuthenticator;
+        this.permissionsServiceProvider = permissionsServiceProvider;
         serviceAccountToken = config.getString(Keys.WEB_SERVICE_ACCOUNT_TOKEN);
         forceLdap = config.getBoolean(Keys.LDAP_FORCE);
         forceOpenId = config.getBoolean(Keys.OPENID_FORCE);
+        allowOpenIdRegistration = config.getBoolean(Keys.OPENID_ALLOW_REGISTRATION);
+    }
+
+    public LoginResult login(HttpServletRequest request) throws StorageException {
+        if (SessionHelper.isSessionOriginValid(request)) {
+            HttpSession session = request.getSession(false);
+            Date expiration = (Date) session.getAttribute(SessionHelper.EXPIRATION_KEY);
+            if (expiration != null && expiration.before(new Date())) {
+                session.invalidate();
+            } else {
+                Long userId = (Long) session.getAttribute(SessionHelper.USER_ID_KEY);
+                if (userId != null) {
+                    User user = permissionsServiceProvider.get().getUser(userId);
+                    if (user != null) {
+                        checkUserEnabled(user);
+                        return new LoginResult(user, expiration);
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     public LoginResult login(
             String scheme, String credentials) throws StorageException, GeneralSecurityException, IOException {
-        switch (scheme.toLowerCase()) {
+        switch (scheme.toLowerCase(Locale.ROOT)) {
             case "bearer":
                 return login(credentials);
             case "basic":
@@ -191,7 +219,7 @@ public class LoginService {
             return null;
         }
 
-        email = email.trim().toLowerCase();
+        email = email.trim().toLowerCase(Locale.ROOT);
         User user = storage.getObject(User.class, new Request(
                 new Columns.All(),
                 new Condition.Or(
@@ -219,9 +247,16 @@ public class LoginService {
 
         User user = storage.getObject(User.class, new Request(
                 new Columns.All(),
-                new Condition.Equals("LOWER(email)", email.toLowerCase())));
+                new Condition.Equals("LOWER(email)", email.toLowerCase(Locale.ROOT))));
 
         if (user == null) {
+
+            if (!allowOpenIdRegistration && !UserUtil.isEmpty(storage)) {
+                Server server = storage.getObject(Server.class, new Request(new Columns.All()));
+                if (!server.getRegistration()) {
+                    throw new SecurityException("Registration disabled");
+                }
+            }
 
             user = new User();
             UserUtil.setUserDefaults(user, config);

@@ -22,6 +22,7 @@ import org.traccar.database.MediaManager;
 import org.traccar.helper.LogAction;
 import org.traccar.model.Device;
 import org.traccar.model.DeviceAccumulators;
+import org.traccar.model.LinkedDevice;
 import org.traccar.model.Position;
 import org.traccar.model.User;
 import org.traccar.session.ConnectionManager;
@@ -48,6 +49,7 @@ import jakarta.ws.rs.core.Response;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Stream;
@@ -84,6 +86,7 @@ public class DeviceResource extends BaseObjectResource<Device> {
             @QueryParam("all") boolean all, @QueryParam("userId") long userId,
             @QueryParam("uniqueId") List<String> uniqueIds,
             @QueryParam("id") List<Long> deviceIds,
+            @QueryParam("deviceId") long linkedFromDeviceId,
             @QueryParam("excludeAttributes") boolean excludeAttributes,
             @QueryParam("limit") int limit, @QueryParam("offset") int offset,
             @QueryParam("keyword") String keyword) throws StorageException {
@@ -126,6 +129,12 @@ public class DeviceResource extends BaseObjectResource<Device> {
                 }
             }
 
+            if (linkedFromDeviceId > 0) {
+                permissionsService.checkPermission(Device.class, getUserId(), linkedFromDeviceId);
+                conditions.add(new Condition.Permission(
+                        Device.class, linkedFromDeviceId, LinkedDevice.class).excludeGroups());
+            }
+
             if (keyword != null && !keyword.isEmpty()) {
                 conditions.add(new Condition.Contains(
                         List.of("name", "uniqueId", "phone", "model", "contact"), keyword));
@@ -152,6 +161,7 @@ public class DeviceResource extends BaseObjectResource<Device> {
             if (entity.getHours() != null) {
                 position.getAttributes().put(Position.KEY_HOURS, entity.getHours());
             }
+            position.setServerTime(new Date());
             position.setId(storage.addObject(position, new Request(new Columns.Exclude("id"))));
 
             Device device = new Device();
@@ -193,6 +203,8 @@ public class DeviceResource extends BaseObjectResource<Device> {
     public Response uploadImage(
             @PathParam("id") long deviceId, File file,
             @HeaderParam(HttpHeaders.CONTENT_TYPE) String type) throws StorageException, IOException {
+
+        permissionsService.checkEdit(getUserId(), Device.class, false, false);
 
         Device device = storage.getObject(Device.class, new Request(
                 new Columns.All(),
