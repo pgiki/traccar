@@ -15,5 +15,8 @@ bin
 traccar.xml
 .env
 .env.example
+branding/branding.json
+branding/assets/
 docs/omni-ebike-ecu-protocol.pdf
 demo/
+traccar-web/

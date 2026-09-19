@@ -1,0 +1,39 @@
+{
+  "$comment": "White-label configuration for traccar-web. Copy to branding.json and fill in your values. See README.md.",
+  "appName": "Acme GPS",
+  "appDescription": "Acme GPS Tracking System",
+  "colorPrimary": "#0d47a1",
+  "colorSecondary": "#2e7d32",
+  "colorInk": "#1c1c1e",
+  "assets": {
+    "$comment": "Paths are relative to the branding/ directory. All optional; missing files are skipped with a warning.",
+    "logoSvg": "assets/logo.svg",
+    "favicon": "assets/favicon.ico",
+    "appleTouchIcon": "assets/apple-touch-icon-180x180.png"
+  },
+  "server": {
+    "ownServerUrl": "https://gps.example.com"
+  },
+  "links": {
+    "$comment": "Applied at runtime via the Traccar Server API (see --seed). Empty string = leave unchanged.",
+    "logoUrl": "",
+    "logoInvertedUrl": "",
+    "supportUrl": "https://example.com/support",
+    "termsUrl": "https://example.com/terms",
+    "privacyUrl": "https://example.com/privacy",
+    "announcement": ""
+  },
+  "maps": {
+    "$comment": "Empty string keeps Traccar's built-in fallback key (not recommended for production) or relies on the server attribute. Set your own keys for production.",
+    "locationIqKey": "",
+    "ordnanceSurveyKey": "",
+    "googleKey": "",
+    "mapTilerKey": "",
+    "bingMapsKey": "",
+    "tomTomKey": "",
+    "hereKey": "",
+    "mapboxAccessToken": "",
+    "defaultActiveStyles": "osm,openFreeMap",
+    "defaultStyle": "osm"
+  }
+}

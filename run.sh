@@ -7,19 +7,34 @@ cd "$SCRIPT_DIR"
 CONFIG="traccar.xml"
 SKIP_JAVA=false
 SKIP_FRONTEND=false
+BRANDING=false
+BRANDING_SERVER=""
+BRANDING_EMAIL=""
+BRANDING_PASSWORD=""
+SKIP_BRANDING_SEED=false
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --skip-java)     SKIP_JAVA=true ;;
-    --skip-frontend) SKIP_FRONTEND=true ;;
-    --config)        CONFIG="$2"; shift ;;
+    --skip-java)          SKIP_JAVA=true ;;
+    --skip-frontend)      SKIP_FRONTEND=true ;;
+    --branding)           BRANDING=true ;;
+    --branding-server)    BRANDING_SERVER="$2"; shift ;;
+    --branding-email)     BRANDING_EMAIL="$2"; shift ;;
+    --branding-password)  BRANDING_PASSWORD="$2"; shift ;;
+    --skip-branding-seed) SKIP_BRANDING_SEED=true ;;
+    --config)             CONFIG="$2"; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-java] [--skip-frontend] [--config <file>]"
+      echo "Usage: $0 [--skip-java] [--skip-frontend] [--branding] [--config <file>]"
       echo ""
-      echo "  --skip-java       Skip Gradle build (use existing target/tracker-server.jar)"
-      echo "  --skip-frontend   Skip npm build (use existing traccar-web/build/)"
-      echo "  --config <file>   Config file to use (default: traccar.xml)"
+      echo "  --skip-java           Skip Gradle build (use existing target/tracker-server.jar)"
+      echo "  --skip-frontend       Skip npm build (use existing traccar-web/build/)"
+      echo "  --branding            Run branding deploy (apply patches, build, seed server)"
+      echo "  --branding-server     Server URL for branding seed (required with --branding)"
+      echo "  --branding-email      Admin email for branding seed (required with --branding)"
+      echo "  --branding-password   Admin password for branding seed (required with --branding)"
+      echo "  --skip-branding-seed  Skip runtime branding push to the live server"
+      echo "  --config <file>       Config file to use (default: traccar.xml)"
       exit 0
       ;;
     *) echo "Unknown option: $1  (run with --help for usage)"; exit 1 ;;
@@ -40,6 +55,14 @@ command -v node >/dev/null  || { echo "ERROR: 'node' not found — please instal
 command -v npm  >/dev/null  || { echo "ERROR: 'npm'  not found — please install Node.js (18+)"; exit 1; }
 [[ -f "gradlew" ]]          || { echo "ERROR: 'gradlew' not found — run this script from the traccar project root"; exit 1; }
 [[ -f "$CONFIG" ]]          || { echo "ERROR: config file '$CONFIG' not found"; exit 1; }
+
+if [[ "$BRANDING" == true ]]; then
+  [[ -f "branding/deploy.sh" ]]  || { echo "ERROR: branding/deploy.sh not found"; exit 1; }
+  [[ -z "$BRANDING_SERVER" || -z "$BRANDING_EMAIL" || -z "$BRANDING_PASSWORD" ]] && {
+    echo "ERROR: --branding requires --branding-server, --branding-email, and --branding-password";
+    exit 1;
+  }
+fi
 
 java_version=$(java -version 2>&1 | head -1)
 echo "    java  : $java_version"
@@ -78,6 +101,18 @@ fi
   echo "ERROR: traccar-web/build/index.html not found — run without --skip-frontend to build it first"
   exit 1
 }
+
+# ── Step 2.5: Branding deploy ──────────────────────────────────────────────
+if [[ "$BRANDING" == true ]]; then
+  echo ""
+  echo "==> Deploying branding..."
+  branding_args=("--server" "$BRANDING_SERVER" "--email" "$BRANDING_EMAIL" "--password" "$BRANDING_PASSWORD")
+  if [[ "$SKIP_BRANDING_SEED" == true ]]; then
+    branding_args+=("--skip-seed")
+  fi
+  bash branding/deploy.sh "${branding_args[@]}"
+  echo "    Branding deployed."
+fi
 
 # ── Step 3: Start server ──────────────────────────────────────────────────────
 echo ""
