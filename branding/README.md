@@ -42,7 +42,7 @@ What gets patched (all anchor-based, idempotent):
 | `src/settings/CalendarPage.jsx`                                   | iCal `PRODID` `Traccar` → your brand                                                         |
 | `src/map/core/useMapStyles.js`                                    | LocationIQ / Ordnance Survey fallback keys → yours                                           |
 | `src/map/core/MapView.jsx`                                        | default map styles → yours (only if configured)                                              |
-| `src/common/theme/palette.js`                                     | primary/secondary fallbacks → your colors (branded login before server data loads)           |
+| `src/common/theme/palette.js`                                     | primary/secondary fallbacks → your colors, auto-lightened in dark mode so outlined buttons (e.g. Replay SHOW) stay visible; optional `colorPrimaryDark` / `colorSecondaryDark` pin exact dark shades |
 | `src/main/java/org/traccar/web/OverrideTextFilter.java`           | backend `${title}`/`${description}`/`${colorPrimary}` defaults → your brand (fresh installs) |
 
 Revert everything to git HEAD with `node branding/apply-branding.mjs --revert`.

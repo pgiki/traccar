@@ -4,6 +4,9 @@
   "appDescription": "Acme GPS Tracking System",
   "colorPrimary": "#0d47a1",
   "colorSecondary": "#2e7d32",
+  "$comment:colorsDark": "Optional exact dark-mode shades. Empty = auto-lighten the base color so outlined buttons (e.g. Replay SHOW) stay visible on dark backgrounds.",
+  "colorPrimaryDark": "",
+  "colorSecondaryDark": "",
   "colorInk": "#1c1c1e",
   "assets": {
     "$comment": "Paths are relative to the branding/ directory. All optional; missing files are skipped with a warning.",

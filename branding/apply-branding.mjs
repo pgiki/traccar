@@ -151,6 +151,12 @@ function validate(config) {
     fail(`colorPrimary must be a hex color, got: ${config.colorPrimary}`);
   if (!HEX.test(config.colorSecondary || ""))
     fail(`colorSecondary must be a hex color, got: ${config.colorSecondary}`);
+  for (const field of ["colorPrimaryDark", "colorSecondaryDark"]) {
+    const value = config[field];
+    if (value !== undefined && value !== "" && !HEX.test(value)) {
+      fail(`${field} must be a hex color or empty, got: ${value}`);
+    }
+  }
   checkUrl(config.server?.ownServerUrl, "server.ownServerUrl");
   for (const [key, value] of Object.entries(config.links || {})) {
     if (key === "announcement") continue;
@@ -347,36 +353,85 @@ function buildPatches(config, brandingDir) {
 
   patches.push({
     file: join(WEB, "src", "common", "theme", "palette.js"),
-    name: "default palette fallbacks",
+    name: "default palette fallbacks (dark-mode aware)",
     apply: (c) => {
+      // Anchor: only touch the known palette module. Unknown layouts are left alone.
+      if (!c.includes("validatedColor")) return null;
+      // A single dark hex for both modes is invisible on dark backgrounds
+      // (e.g. outlined secondary SHOW button on grey[900]). Keep the brand
+      // color for light mode, but lighten the resolved base in dark mode.
+      // Optional colorPrimaryDark / colorSecondaryDark override the auto
+      // lightened value when the brand needs an exact dark-mode shade.
+      const primaryDark = config.colorPrimaryDark || "";
+      const secondaryDark = config.colorSecondaryDark || "";
+      const primaryDarkExpr = primaryDark
+        ? `'${primaryDark}'`
+        : "lighten(primaryBase, 0.3)";
+      const secondaryDarkExpr = secondaryDark
+        ? `'${secondaryDark}'`
+        : "lighten(secondaryBase, 0.6)";
+      const next = `import { grey } from '@mui/material/colors';
+import { lighten } from '@mui/material/styles';
+
+const validatedColor = (color) => (/^#([0-9A-Fa-f]{3}){1,2}$/.test(color) ? color : null);
+
+export default (server, darkMode) => {
+  const primaryBase = validatedColor(server?.attributes?.colorPrimary) || '${config.colorPrimary}';
+  const secondaryBase = validatedColor(server?.attributes?.colorSecondary) || '${config.colorSecondary}';
+  return {
+    mode: darkMode ? 'dark' : 'light',
+    background: {
+      default: darkMode ? grey[900] : grey[50],
+    },
+    primary: {
+      main: darkMode ? ${primaryDarkExpr} : primaryBase,
+    },
+    secondary: {
+      main: darkMode ? ${secondaryDarkExpr} : secondaryBase,
+    },
+    neutral: {
+      main: grey[500],
+    },
+    geometry: {
+      main: '#3bb2d0',
+    },
+    alwaysDark: {
+      main: grey[900],
+    },
+  };
+};
+`;
+      return next === c ? null : next;
+    },
+  });
+
+  patches.push({
+    file: join(
+      ROOT,
+      "src",
+      "main",
+      "java",
+      "org",
+      "traccar",
+      "web",
+      "OverrideTextFilter.java",
+    ),
+    name: "backend ${title}/${description}/${colorPrimary} defaults (fresh installs)",
+    apply: (c) => {
+      // Anchor: only touch the known filter. Unknown layouts are left alone.
+      if (!c.includes('server.getString("title"')) return null;
       let next = c;
       next = next.replace(
-        "validatedColor(server?.attributes?.colorPrimary) || (darkMode ? indigo[200] : indigo[900]),",
-        `validatedColor(server?.attributes?.colorPrimary) || '${config.colorPrimary}',`,
+        /(server\.getString\("title", ")[^"]*("\))/,
+        (_, open, close) => `${open}${config.appName}${close}`,
       );
       next = next.replace(
-        "validatedColor(server?.attributes?.colorSecondary) || (darkMode ? green[200] : green[800]),",
-        `validatedColor(server?.attributes?.colorSecondary) || '${config.colorSecondary}',`,
+        /(server\.getString\("description", ")[^"]*("\))/,
+        (_, open, close) => `${open}${config.appDescription}${close}`,
       );
       next = next.replace(
-        /(validatedColor\(server\?\.attributes\?\.colorPrimary\) \|\| ')[^']*(',)/,
+        /(server\.getString\("colorPrimary", ")[^"]*("\))/,
         (_, open, close) => `${open}${config.colorPrimary}${close}`,
-      );
-      next = next.replace(
-        /(validatedColor\(server\?\.attributes\?\.colorSecondary\) \|\| ')[^']*(',)/,
-        (_, open, close) => `${open}${config.colorSecondary}${close}`,
-      );
-      next = next.replace(
-        "import { grey, green, indigo } from '@mui/material/colors';",
-        "import { grey } from '@mui/material/colors';",
-      );
-      next = next.replace(
-        "import { grey, green } from '@mui/material/colors';",
-        "import { grey } from '@mui/material/colors';",
-      );
-      next = next.replace(
-        "import { grey, indigo } from '@mui/material/colors';",
-        "import { grey } from '@mui/material/colors';",
       );
       return next === c ? null : next;
     },
@@ -401,6 +456,21 @@ function runPatches(config, brandingDir, dryRun) {
           "SKIP",
           `${patch.name}: asset not found (${patch.asset.replace(`${ROOT}/`, "")})`,
         );
+        continue;
+      }
+      // Idempotent: skip copy when bytes already match.
+      let identical = false;
+      try {
+        if (existsSync(patch.file)) {
+          identical = readFileSync(patch.asset).equals(
+            readFileSync(patch.file),
+          );
+        }
+      } catch {
+        identical = false;
+      }
+      if (identical) {
+        record(rel, "OK ", `${patch.name}: already branded`);
         continue;
       }
       if (dryRun) {
@@ -463,13 +533,25 @@ function revertFiles() {
     "src/map/core/MapView.jsx",
     "src/common/theme/palette.js",
   ];
+  const rootFiles = [
+    "src/main/java/org/traccar/web/OverrideTextFilter.java",
+  ];
   const git = (dir, args) =>
     execFileSync("git", args, { cwd: dir, encoding: "utf8" });
   const existingWeb = webFiles.filter((f) => existsSync(join(WEB, f)));
   if (existingWeb.length) git(WEB, ["checkout", "--", ...existingWeb]);
+  const existingRoot = rootFiles.filter((f) =>
+    existsSync(join(ROOT, f)),
+  );
+  if (existingRoot.length) git(ROOT, ["checkout", "--", ...existingRoot]);
   console.log(
     `Reverted ${existingWeb.length} file(s) in traccar-web to git HEAD.`,
   );
+  if (existingRoot.length) {
+    console.log(
+      `Reverted ${existingRoot.length} file(s) in traccar backend to git HEAD.`,
+    );
+  }
 }
 
 /* Runtime branding: merge config values into the live server's attributes. */
