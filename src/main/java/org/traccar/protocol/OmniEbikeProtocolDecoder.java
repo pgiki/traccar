@@ -35,6 +35,7 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
     private static final String RESPONSE_SCOOTER = "*SCOS";
     private static final String RESPONSE_BEACON = "*CMDS";
     private static final long PENDING_COMMAND_TIMEOUT_MS = 30_000L;
+    private static final long SUPPLEMENTARY_TIME_OFFSET_MS = 1;
 
     private static final class DeviceAuthState {
         private String pendingCommand;
@@ -91,27 +92,31 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             return null;
         }
         Position last = getCacheManager().getPosition(deviceId);
-        if (last == null || !last.hasAttribute(Position.KEY_BATTERY_LEVEL)) {
+        if (last == null) {
             return null;
         }
-        BatteryState state = batteryState(deviceId);
+        BatteryState seeded = new BatteryState();
         Object level = last.getAttributes().get(Position.KEY_BATTERY_LEVEL);
         if (level instanceof Number number) {
-            state.batteryLevel = number.intValue();
+            seeded.batteryLevel = number.intValue();
         }
         Object charge = last.getAttributes().get(Position.KEY_CHARGE);
         if (charge instanceof Boolean flag) {
-            state.charge = flag;
+            seeded.charge = flag;
         }
         Object battery = last.getAttributes().get(Position.KEY_BATTERY);
         if (battery instanceof Number voltage) {
-            state.battery = voltage.doubleValue();
+            seeded.battery = voltage.doubleValue();
         }
         Object power = last.getAttributes().get(Position.KEY_POWER);
         if (power instanceof Number voltage) {
-            state.power = voltage.doubleValue();
+            seeded.power = voltage.doubleValue();
         }
-        return state;
+        if (seeded.batteryLevel == null && seeded.charge == null
+                && seeded.battery == null && seeded.power == null) {
+            return null;
+        }
+        return batteryByDevice.computeIfAbsent(deviceId, id -> seeded);
     }
 
     /**
@@ -132,6 +137,29 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             position.setLongitude(last.getLongitude());
             position.setAltitude(last.getAltitude());
             position.setCourse(last.getCourse());
+            position.setAccuracy(last.getAccuracy());
+            position.setOutdated(false);
+        }
+    }
+
+    /**
+     * Anchor supplementary (non-vehicle) data such as beacon validation to the last known
+     * location, but place it just behind the last position so it never becomes the device's
+     * newest position. The vehicle's newest position carries the battery telemetry that the
+     * UI relies on, so a beacon message must not supersede it.
+     */
+    private void anchorSupplementary(Position position, long deviceId) {
+        Position last = null;
+        if (getCacheManager() != null) {
+            last = getCacheManager().getPosition(deviceId);
+        }
+        if (last != null && last.getFixTime() != null) {
+            position.setFixTime(new Date(last.getFixTime().getTime() - SUPPLEMENTARY_TIME_OFFSET_MS));
+            position.setDeviceTime(position.getServerTime());
+            position.setValid(last.getValid());
+            position.setLatitude(last.getLatitude());
+            position.setLongitude(last.getLongitude());
+            position.setAltitude(last.getAltitude());
             position.setAccuracy(last.getAccuracy());
             position.setOutdated(false);
         }
@@ -688,6 +716,10 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
                 if (!safeStr(values, dataIndex + 6).isEmpty()) {
                     position.set("beaconLatitude", safeStr(values, dataIndex + 6));
                 }
+                // Beacon validation carries no vehicle state; anchor it just behind the last
+                // position so it stays stored but does not supersede the vehicle's newest
+                // position (which holds the battery telemetry the UI shows).
+                anchorSupplementary(position, deviceSession.getDeviceId());
                 // Beacon response uses the full *CMDS header with the extra routing field (values[3])
                 if (channel != null && isBeacon) {
                     String beaconRouting = safeStr(values, 3);
@@ -743,13 +775,26 @@ public class OmniEbikeProtocolDecoder extends BaseProtocolDecoder {
             }
         }
 
-        // Beacon (B0) validation is not vehicle state; every other status message carries
-        // the last known energy telemetry so the standard keys survive on each position.
+        // Beacon (B0) validation carries only beacon data (including the beacon device's own
+        // battery) and no vehicle state, so the vehicle energy telemetry is not injected here.
+        // Every other status message carries the last known energy telemetry so the standard
+        // keys survive on each vehicle position.
         if (!type.equals("B0")) {
             injectCachedBattery(position, deviceSession.getDeviceId());
         }
 
         return !position.getAttributes().isEmpty() ? position : null;
+    }
+
+    @Override
+    protected Object handleEmptyMessage(Channel channel, SocketAddress remoteAddress, Object msg) {
+        Object empty = super.handleEmptyMessage(channel, remoteAddress, msg);
+        if (empty instanceof Position position) {
+            // An empty position (database.saveEmpty) carries no telemetry; keep it stored but
+            // behind the last position so it cannot hide the vehicle's battery state.
+            anchorSupplementary(position, position.getDeviceId());
+        }
+        return empty;
     }
 
 }

@@ -688,4 +688,77 @@ public class OmniEbikeProtocolDecoderTest extends ProtocolTest {
         assertEquals(UnitsConverter.knotsFromKph(22.1), s6.getSpeed(), 1e-9);
     }
 
+    @Test
+    public void testBeaconKeepsBeaconBatterySeparateFromVehicle() throws Exception {
+
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+
+        // Establish a vehicle position with battery telemetry
+        Position vehicle = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,Q0,412,80,28#"));
+        assertNotNull(vehicle);
+        vehicle.setFixTime(new Date(1_500_000_000_000L));
+        when(decoder.getCacheManager().getPosition(anyLong())).thenReturn(vehicle);
+
+        // B0 is beacon validation: it carries the beacon device's own battery, not the vehicle's
+        Position beacon = (Position) decoder.decode(null, null, text(
+                "*CMDR,OM,123456789123456,000000000000,B0,1,10,12:34:56:78:90:AB,1578386704,50,0,0,0#"));
+        assertNotNull(beacon);
+        assertEquals(1, beacon.getAttributes().get("beaconDetected"));
+        assertEquals(50, beacon.getAttributes().get("beaconBattery"));
+        assertFalse(beacon.hasAttribute(Position.KEY_BATTERY_LEVEL));
+        assertFalse(beacon.hasAttribute(Position.KEY_POWER));
+
+        // ... and it is anchored strictly behind the vehicle position so the vehicle's battery
+        // telemetry stays the device's newest position
+        assertTrue(beacon.getFixTime().before(vehicle.getFixTime()));
+    }
+
+    @Test
+    public void testBatteryPersistsOnEveryVehiclePosition() throws Exception {
+
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+
+        assertNotNull(decoder.decode(null, null, text("*SCOR,OM,123456789123456,Q0,412,80,28#")));
+
+        // After the cache is warm, no vehicle position may lose the battery telemetry
+        String[] messages = {
+            "*SCOR,OM,123456789123456,D0,0,124458.00,A,2237.7514,N,11408.6214,E,6,0.21,151216,10,M,A#",
+            "*SCOR,OM,123456789123456,D1,60#",
+            "*SCOR,OM,123456789123456,S1,1#",
+            "*SCOR,OM,123456789123456,G0,110,Jul 4 2018,1101,1101,1101,,,,#",
+        };
+        for (String message : messages) {
+            Position position = (Position) decoder.decode(null, null, text(message));
+            assertNotNull(position, message);
+            assertEquals(80, position.getAttributes().get(Position.KEY_BATTERY_LEVEL), message);
+        }
+    }
+
+    @Test
+    public void testEmptyMessageDoesNotSupersedeVehiclePosition() throws Exception {
+
+        var decoder = inject(new OmniEbikeProtocolDecoder(null));
+        var config = new Config() {
+            @Override
+            public String getString(String key) {
+                return "database.saveEmpty".equals(key) ? "true" : super.getString(key);
+            }
+        };
+        decoder.setConfig(config);
+
+        // Establish a vehicle position with battery telemetry
+        Position vehicle = (Position) decoder.decode(null, null, text(
+                "*SCOR,OM,123456789123456,Q0,412,80,28#"));
+        assertNotNull(vehicle);
+        vehicle.setFixTime(new Date(1_500_000_000_000L));
+        when(decoder.getCacheManager().getPosition(anyLong())).thenReturn(vehicle);
+
+        // An unparsed message produces a stored-but-supplementary position that must not
+        // become the newest one and hide the vehicle's battery state
+        Object empty = decoder.handleEmptyMessage(null, null, text("*SCOR,OM,123456789123456,XX,123#"));
+        assertNotNull(empty);
+        assertTrue(((Position) empty).getFixTime().before(vehicle.getFixTime()));
+    }
+
 }
